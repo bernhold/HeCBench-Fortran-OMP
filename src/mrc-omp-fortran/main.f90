@@ -1,0 +1,152 @@
+program main
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use omp_lib
+  implicit none
+
+  character(len=256) :: arg0, arg1, arg2
+  integer :: length, repeat, i
+  integer, allocatable :: y(:)
+  real(real32), allocatable :: x1(:), x2(:), dout(:), dx1(:), dx2(:), rdx1(:), rdx2(:)
+  real(real32), parameter :: margin = 0.01_real32
+  real(real64) :: start_time, end_time, elapsed_us
+  logical :: ok
+
+  call get_command_argument(0, arg0)
+  if (command_argument_count() /= 2) then
+    print '(3A)', 'Usage: ', trim(arg0), ' <number of elements> <repeat>'
+    stop 1
+  end if
+
+  call get_command_argument(1, arg1)
+  call get_command_argument(2, arg2)
+  read(arg1, *) length
+  read(arg2, *) repeat
+  if (length <= 0 .or. repeat <= 0) stop 1
+
+  allocate(y(length), x1(length), x2(length), dout(length), dx1(length), dx2(length), rdx1(length), rdx2(length))
+
+  do i = 1, length
+    x1(i) = real(mod(17 * (i - 1) + 3, 401), real32) / 100.0_real32 - 2.0_real32
+    x2(i) = real(mod(29 * (i - 1) + 5, 401), real32) / 100.0_real32 - 2.0_real32
+    dout(i) = real(mod(43 * (i - 1) + 7, 401), real32) / 100.0_real32 - 2.0_real32
+    if (mod(53 * (i - 1) + 11, 2) == 0) then
+      y(i) = -1
+    else
+      y(i) = 1
+    end if
+  end do
+  dx1 = 0.0_real32
+  dx2 = 0.0_real32
+
+  !$omp target data map(to: x1(1:length), x2(1:length), dout(1:length), y(1:length)) &
+  !$omp& map(from: dx1(1:length), dx2(1:length))
+  do i = 1, repeat
+    call mrc_gradient(length, y, x1, x2, dout, margin, dx1, dx2)
+    call mrc_gradient2(length, y, x1, x2, dout, margin, dx1, dx2)
+  end do
+
+  start_time = omp_get_wtime()
+  do i = 1, repeat
+    call mrc_gradient(length, y, x1, x2, dout, margin, dx1, dx2)
+  end do
+  end_time = omp_get_wtime()
+  elapsed_us = (end_time - start_time) * 1.0e6_real64 / real(repeat, real64)
+  print '(A,F0.6,A)', 'Average execution time of MRC kernel: ', elapsed_us, ' (us)'
+
+  start_time = omp_get_wtime()
+  do i = 1, repeat
+    call mrc_gradient2(length, y, x1, x2, dout, margin, dx1, dx2)
+  end do
+  end_time = omp_get_wtime()
+  elapsed_us = (end_time - start_time) * 1.0e6_real64 / real(repeat, real64)
+  print '(A,F0.6,A)', 'Average execution time of MRC2 kernel: ', elapsed_us, ' (us)'
+  !$omp end target data
+
+  call reference(length, y, x1, x2, dout, margin, rdx1, rdx2)
+
+  ok = .true.
+  do i = 1, length
+    if (abs(dx1(i) - rdx1(i)) > 1.0e-3_real32 .or. abs(dx2(i) - rdx2(i)) > 1.0e-3_real32) then
+      ok = .false.
+      exit
+    end if
+  end do
+
+  if (ok) then
+    print '(A)', 'PASS'
+  else
+    print '(A)', 'FAIL'
+    stop 1
+  end if
+
+  deallocate(y, x1, x2, dout, dx1, dx2, rdx1, rdx2)
+
+contains
+
+  subroutine mrc_gradient(n, y, x1, x2, dout, margin, dx1, dx2)
+    integer, intent(in) :: n
+    integer, intent(in) :: y(:)
+    real(real32), intent(in) :: x1(:), x2(:), dout(:), margin
+    real(real32), intent(out) :: dx1(:), dx2(:)
+    integer :: idx
+    real(real32) :: dist
+
+    !$omp target teams distribute parallel do thread_limit(256) private(dist)
+    do idx = 1, n
+      dist = -real(y(idx), real32) * (x1(idx) - x2(idx)) + margin
+      if (dist < 0.0_real32) then
+        dx1(idx) = 0.0_real32
+        dx2(idx) = 0.0_real32
+      else
+        dx1(idx) = -real(y(idx), real32) * dout(idx)
+        dx2(idx) = real(y(idx), real32) * dout(idx)
+      end if
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine mrc_gradient
+
+  subroutine mrc_gradient2(n, y, x1, x2, dout, margin, dx1, dx2)
+    integer, intent(in) :: n
+    integer, intent(in) :: y(:)
+    real(real32), intent(in) :: x1(:), x2(:), dout(:), margin
+    real(real32), intent(out) :: dx1(:), dx2(:)
+    integer :: idx
+    real(real32) :: yval, oval, dist
+
+    !$omp target teams distribute parallel do thread_limit(256) private(yval, oval, dist)
+    do idx = 1, n
+      yval = real(y(idx), real32)
+      oval = dout(idx)
+      dist = -yval * (x1(idx) - x2(idx)) + margin
+      if (dist < 0.0_real32) then
+        dx1(idx) = 0.0_real32
+        dx2(idx) = 0.0_real32
+      else
+        dx1(idx) = -yval * oval
+        dx2(idx) = yval * oval
+      end if
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine mrc_gradient2
+
+  subroutine reference(n, y, x1, x2, dout, margin, dx1, dx2)
+    integer, intent(in) :: n
+    integer, intent(in) :: y(:)
+    real(real32), intent(in) :: x1(:), x2(:), dout(:), margin
+    real(real32), intent(out) :: dx1(:), dx2(:)
+    integer :: idx
+    real(real32) :: dist
+
+    do idx = 1, n
+      dist = -real(y(idx), real32) * (x1(idx) - x2(idx)) + margin
+      if (dist < 0.0_real32) then
+        dx1(idx) = 0.0_real32
+        dx2(idx) = 0.0_real32
+      else
+        dx1(idx) = -real(y(idx), real32) * dout(idx)
+        dx2(idx) = real(y(idx), real32) * dout(idx)
+      end if
+    end do
+  end subroutine reference
+
+end program main

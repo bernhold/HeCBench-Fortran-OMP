@@ -1,0 +1,99 @@
+program stddev_main
+  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use omp_lib
+  implicit none
+
+  integer :: d, n, repeat, i
+  character(len=64) :: arg
+  real(real32), allocatable :: data(:), std(:), std_ref(:)
+  real(real64) :: start_time, elapsed_s
+  integer(int64) :: seed
+  logical :: ok
+
+  if (command_argument_count() /= 3) then
+    write(*,'("Usage: ./main <D> <N> <repeat>")')
+    write(*,'("D: number of columns of data (must be a multiple of 32)")')
+    write(*,'("N: number of rows of data (at least one row)")')
+    stop 1
+  end if
+
+  call get_command_argument(1, arg)
+  read(arg, *) d
+  call get_command_argument(2, arg)
+  read(arg, *) n
+  call get_command_argument(3, arg)
+  read(arg, *) repeat
+
+  allocate(data(0:d*n-1), std(0:d-1), std_ref(0:d-1))
+  seed = 123_int64
+  do i = 0, d * n - 1
+    data(i) = next_unit(seed)
+  end do
+
+  !$omp target data map(to: data) map(from: std)
+  call stddev_kernel(std, data, d, n, .true.)
+  start_time = omp_get_wtime()
+  do i = 1, repeat
+    call stddev_kernel(std, data, d, n, .true.)
+  end do
+  elapsed_s = (omp_get_wtime() - start_time) / real(repeat, real64)
+  !$omp end target data
+
+  write(*,'("Average execution time of stddev kernels: ",F0.6," (s)")') elapsed_s
+
+  call stddev_ref_kernel(std_ref, data, d, n, .true.)
+  ok = maxval(abs(std - std_ref)) <= 1.0e-3_real32
+  if (ok) then
+    write(*,'("PASS")')
+  else
+    write(*,'("FAIL")')
+    stop 1
+  end if
+
+contains
+
+  subroutine stddev_kernel(std, data, d, n, sample)
+    real(real32), intent(out) :: std(0:)
+    real(real32), intent(in) :: data(0:)
+    integer, intent(in) :: d, n
+    logical, intent(in) :: sample
+    integer :: col, row, sample_size
+    real(real32) :: sumsq
+
+    sample_size = merge(n - 1, n, sample)
+    !$omp target teams distribute parallel do private(row, sumsq) thread_limit(256)
+    do col = 0, d - 1
+      sumsq = 0.0_real32
+      do row = 0, n - 1
+        sumsq = sumsq + data(row * d + col) * data(row * d + col)
+      end do
+      std(col) = sqrt(sumsq / real(sample_size, real32))
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine stddev_kernel
+
+  subroutine stddev_ref_kernel(std, data, d, n, sample)
+    real(real32), intent(out) :: std(0:)
+    real(real32), intent(in) :: data(0:)
+    integer, intent(in) :: d, n
+    logical, intent(in) :: sample
+    integer :: col, row, sample_size
+    real(real32) :: sumsq
+
+    sample_size = merge(n - 1, n, sample)
+    do col = 0, d - 1
+      sumsq = 0.0_real32
+      do row = 0, n - 1
+        sumsq = sumsq + data(row * d + col) * data(row * d + col)
+      end do
+      std(col) = sqrt(sumsq / real(sample_size, real32))
+    end do
+  end subroutine stddev_ref_kernel
+
+  real(real32) function next_unit(seed)
+    integer(int64), intent(inout) :: seed
+    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
+    next_unit = real(seed, real32) / 2147483647.0_real32
+  end function next_unit
+
+end program stddev_main

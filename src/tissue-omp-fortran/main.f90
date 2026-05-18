@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+  end interface
 
   character(len=256) :: arg0, arg
   integer, parameter :: nnt_dev = 32 * 32 * 32
@@ -9,7 +22,7 @@ program main
   integer, parameter :: step = 4
   integer, parameter :: isp = 2
   integer :: dim, repeat, nnt, i, iter
-  integer(int32) :: seed
+  real(real32), parameter :: c_rand_max = 2147483647.0_real32
   integer, allocatable :: tisspoints(:)
   real(real32), allocatable :: gtt(:), gbartt(:), ct(:), ctprev(:), qt(:), ct_gold(:)
   real(real64) :: start_time, elapsed
@@ -34,19 +47,19 @@ program main
   allocate(gtt(nsp * nnt_dev), gbartt(nsp * nnt_dev))
   allocate(ct(nnt_dev), ctprev(nnt_dev), qt(nnt_dev), ct_gold(nnt_dev))
 
-  seed = 1_int32
+  call c_srand(1_c_int)
   do i = 1, 3 * nnt_dev
-    tisspoints(i) = modulo(c_rand(seed), nnt_dev / 3)
+    tisspoints(i) = modulo(c_rand(), nnt_dev / 3)
   end do
   do i = 1, nsp * nnt_dev
-    gtt(i) = real(c_rand(seed), real32) / 32767.0_real32
-    gbartt(i) = real(c_rand(seed), real32) / 32767.0_real32
+    gtt(i) = real(c_rand(), real32) / c_rand_max
+    gbartt(i) = real(c_rand(), real32) / c_rand_max
   end do
   do i = 1, nnt_dev
     ct(i) = 0.0_real32
     ct_gold(i) = 0.0_real32
-    ctprev(i) = real(c_rand(seed), real32) / 32767.0_real32
-    qt(i) = real(c_rand(seed), real32) / 32767.0_real32
+    ctprev(i) = real(c_rand(), real32) / c_rand_max
+    qt(i) = real(c_rand(), real32) / c_rand_max
   end do
 
   !$omp target data map(to: tisspoints(1:3*nnt_dev), gtt(1:nsp*nnt_dev), gbartt(1:nsp*nnt_dev), &
@@ -136,14 +149,5 @@ contains
       ct(itp + 1) = p
     end do
   end subroutine reference
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
 end program main

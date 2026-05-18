@@ -1,17 +1,30 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: block_sizes(6) = [32, 64, 128, 256, 512, 1024]
   real(real32), parameter :: eps = 1.0e-5_real32
+  real(real32), parameter :: rand_max_real = 2147483647.0_real32
 
   character(len=256) :: arg0, arg
   integer :: rows, cols, repeat, i, block_size
   integer(int64) :: total_size, memory_ops
-  integer(int32) :: seed
   real(real32), allocatable :: inp(:), gamma(:), out(:), d_out(:)
   real(real64) :: start_time, elapsed_ms, bandwidth
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 3) then
@@ -27,9 +40,9 @@ program main
   total_size = int(rows, int64) * int(cols, int64)
   allocate(inp(total_size), gamma(cols), out(total_size), d_out(total_size))
 
-  seed = 0_int32
-  call fill_random(inp, seed)
-  call fill_random(gamma, seed)
+  call c_srand(0_c_int)
+  call fill_random(inp)
+  call fill_random(gamma)
 
   !$omp target data map(to: inp(1:total_size), gamma(1:cols)) map(tofrom: d_out(1:total_size))
   call rmsnorm_forward_cpu(out, inp, gamma, rows, cols)
@@ -78,13 +91,13 @@ program main
 
 contains
 
-  subroutine fill_random(values, seed)
+  subroutine fill_random(values)
     real(real32), intent(out) :: values(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(values)
-      values(i) = real(c_rand(seed), real32) / 32767.0_real32 * 2.0_real32 - 1.0_real32
+      ! Preserve the C++ original's srand(0)/rand() input stream.
+      values(i) = real(c_rand(), real32) / rand_max_real * 2.0_real32 - 1.0_real32
     end do
   end subroutine fill_random
 
@@ -191,14 +204,5 @@ contains
     end do
     if (nfaults > 0) stop 1
   end subroutine validate_result
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
 end program main

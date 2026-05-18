@@ -1,7 +1,27 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_float, c_int, c_long_long
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand_mod(modulus) bind(C, name="concat_rand_mod") result(value)
+      import :: c_int
+      integer(c_int), value :: modulus
+      integer(c_int) :: value
+    end function c_rand_mod
+
+    subroutine c_fill_rand_float(values, n) bind(C, name="concat_fill_rand_float")
+      import :: c_float, c_long_long
+      real(c_float), intent(out) :: values(*)
+      integer(c_long_long), value :: n
+    end subroutine c_fill_rand_float
+  end interface
 
   integer, parameter :: seq_len = 1024
   integer, parameter :: batch_size = 8
@@ -39,7 +59,8 @@ contains
     hidden_dim = nhead * 128
     sz0 = batch_size * beam_size * nhead
     sz2 = hidden_dim / nhead
-    sl1 = c_rand_first(nhead, seq_len - 1) + 1
+    call c_srand(int(nhead, c_int))
+    sl1 = int(c_rand_mod(int(seq_len - 1, c_int))) + 1
     sl2 = seq_len - sl1
 
     write(*,*)
@@ -56,8 +77,8 @@ contains
     write(*,'(A,F4.2)') 'Total device memory usage (GB) = ', size_bytes_gb
 
     allocate(inp1(0:inp1_size - 1), inp2(0:inp2_size - 1), outp(0:outp_size - 1), outp_ref(0:outp_size - 1))
-    call fill_input(inp1, inp1_size, nhead, 17_int64)
-    call fill_input(inp2, inp2_size, nhead, 29_int64)
+    call c_fill_rand_float(inp1, int(inp1_size, c_long_long))
+    call c_fill_rand_float(inp2, int(inp2_size, c_long_long))
     outp = -1.0_real32
     outp_ref = -2.0_real32
 
@@ -152,24 +173,5 @@ contains
 
     flat_3dim = id1 * dim2 * dim3 + id2 * dim3 + id3
   end function flat_3dim
-
-  subroutine fill_input(values, n, seed, multiplier)
-    real(real32), intent(out) :: values(0:)
-    integer(int64), intent(in) :: n, multiplier
-    integer, intent(in) :: seed
-    integer(int64) :: i
-
-    do i = 0_int64, n - 1_int64
-      values(i) = real(mod(multiplier * (i + 1_int64) + seed * 97_int64, 1048573_int64), real32)
-    end do
-  end subroutine fill_input
-
-  pure integer function c_rand_first(seed, modulus)
-    integer, intent(in) :: seed, modulus
-    integer(int64) :: state
-
-    state = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    c_rand_first = int(mod(state / 65536_int64, int(modulus, int64)))
-  end function c_rand_first
 
 end program main

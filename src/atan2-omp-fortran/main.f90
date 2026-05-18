@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int16, int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int16, int32, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg
   integer :: n, repeat
@@ -80,22 +93,14 @@ contains
   subroutine initialize_inputs(n, x, y)
     integer, intent(in) :: n
     real(real32), intent(out) :: x(0:), y(0:)
-    integer(int64) :: seed
     integer :: i
 
-    seed = 123_int64
+    call c_srand(123_c_int)
     do i = 0, n - 1
-      x(i) = real(next_rand(seed), real32) + 1.57_real32
-      y(i) = real(next_rand(seed), real32) + 1.57_real32
+      x(i) = real(c_rand(), real32) / 2147483647.0_real32 + 1.57_real32
+      y(i) = real(c_rand(), real32) / 2147483647.0_real32 + 1.57_real32
     end do
   end subroutine initialize_inputs
-
-  real(real64) function next_rand(seed) result(value)
-    integer(int64), intent(inout) :: seed
-
-    seed = mod(16807_int64 * seed, 2147483647_int64)
-    value = real(seed, real64) / 2147483647.0_real64
-  end function next_rand
 
   subroutine compute_f(n, x, y, r)
     integer, intent(in) :: n

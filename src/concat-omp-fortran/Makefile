@@ -1,4 +1,5 @@
 FC        = amdflang
+CC        = amdclang
 OPTIMIZE  = yes
 DEBUG     = no
 DEVICE    = gpu
@@ -7,7 +8,8 @@ LAUNCHER  =
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+csource = rand_fill.c
+obj     = $(source:.f90=.o) $(csource:.c=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
 
@@ -33,6 +35,9 @@ $(program): $(obj)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.c
+	$(CC) -O3 -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

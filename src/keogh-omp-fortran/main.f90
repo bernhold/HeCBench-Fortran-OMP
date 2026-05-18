@@ -78,7 +78,7 @@ program main
 
   end_time = omp_get_wtime()
   elapsed = (end_time - start_time) / real(repeat, real64)
-  write(*,'(A,F8.6,A)') 'Average kernel execution time: ', elapsed, ' (s)'
+  write(*,'(A,F0.6,A)') 'Average kernel execution time: ', elapsed, ' (s)'
   !$omp end target data
 
   call reference_keogh(subject, avgs, stds, lb_h, lower_bound, upper_bound, m, n)

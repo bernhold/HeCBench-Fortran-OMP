@@ -65,7 +65,11 @@ program langevin_main
 
   write(*,*)
   write(*,'(A)') "Error statistics for the kernels:"
-  write(*,'(F8.6,1X,F8.6,1X,F8.6,A)') err0, err1, err2, " "
+  if (max(err0, err1, err2) < 10.0_real32) then
+    write(*,'(F8.6,1X,F8.6,1X,F8.6,A)') err0, err1, err2, " "
+  else
+    write(*,'(F0.6,1X,F0.6,1X,F0.6,A)') err0, err1, err2, " "
+  end if
 
 contains
 

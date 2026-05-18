@@ -1,7 +1,20 @@
 program popcount_main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, int64, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: block_size = 256
   integer(int64), parameter :: m1 = int(z'5555555555555555', int64)
@@ -10,7 +23,6 @@ program popcount_main
   integer :: length, repeat, mode
   integer(int64), allocatable :: data(:)
   integer(int32), allocatable :: result(:)
-  integer(int64) :: seed
   integer :: i
   real(real64) :: start_time, elapsed_us
   character(len=64) :: arg
@@ -27,12 +39,9 @@ program popcount_main
 
   allocate(data(0:length-1), result(0:length-1))
 
-  seed = 2_int64
+  call c_srand(2_c_int)
   do i = 0, length - 1
-    seed = lcg_next(seed)
-    data(i) = ishft(seed, 32)
-    seed = lcg_next(seed)
-    data(i) = ior(data(i), iand(seed, int(z'000000007fffffff', int64)))
+    data(i) = ior(ishft(int(c_rand(), int64), 32), int(c_rand(), int64))
   end do
 
   !$omp target data map(to: data) map(alloc: result)
@@ -49,12 +58,6 @@ program popcount_main
   !$omp end target data
 
 contains
-
-  integer(int64) function lcg_next(seed)
-    integer(int64), intent(in) :: seed
-
-    lcg_next = iand(seed * 1103515245_int64 + 12345_int64, int(z'000000007fffffff', int64))
-  end function lcg_next
 
   subroutine popcount_kernel(data, result, length, mode)
     integer(int64), intent(in) :: data(0:)

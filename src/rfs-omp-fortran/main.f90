@@ -1,10 +1,24 @@
 program rfs_main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer :: n_arrays, n_elems, n, i
-  integer(int64) :: seed
+  integer(c_int) :: rand_value
   real(real32), allocatable :: arrays(:), max_val(:), result(:), factor(:), result_ref(:)
   real(real64) :: start_time, elapsed
   character(len=64) :: arg
@@ -23,12 +37,14 @@ program rfs_main
   allocate(arrays(0:n_arrays*n_elems-1), max_val(0:n_arrays-1), result(0:n_arrays-1))
   allocate(factor(0:n_arrays-1), result_ref(0:n_arrays-1))
 
-  seed = 123_int64
+  call c_srand(123_c_int)
   do n = 0, n_arrays - 1
     max_val(n) = 0.0_real32
     do i = 0, n_elems - 1
-      arrays(n * n_elems + i) = next_unit(seed)
-      if (next_int(seed) /= 0) arrays(n * n_elems + i) = -arrays(n * n_elems + i)
+      rand_value = c_rand()
+      arrays(n * n_elems + i) = real(rand_value, real32) / real(c_rand_max, real32)
+      rand_value = c_rand()
+      if (mod(rand_value, 2_c_int) /= 0) arrays(n * n_elems + i) = -arrays(n * n_elems + i)
       max_val(n) = max(abs(arrays(n * n_elems + i)), max_val(n))
     end do
     factor(n) = create_rounding_factor(max_val(n), n_elems)
@@ -140,17 +156,5 @@ contains
       end if
     end do
   end function exact_match
-
-  integer function next_int(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_int = int(mod(seed, 2_int64))
-  end function next_int
-
-  real(real32) function next_unit(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_unit = real(seed, real32) / 2147483647.0_real32
-  end function next_unit
 
 end program rfs_main

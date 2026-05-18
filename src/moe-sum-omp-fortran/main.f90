@@ -1,7 +1,22 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
   use omp_lib
   implicit none
+
+  real(real32), parameter :: rand_max = 2147483647.0_real32
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg
   integer(int32) :: num_tokens, hidden_size, repeat
@@ -55,9 +70,9 @@ contains
     integer, intent(in) :: topk
     integer(int64) :: i
 
+    call c_srand(int(topk, c_int))
     do i = 1, size(input, kind=int64)
-      input(i) = real(modulo(i * int(37 + topk, int64) + int(17 * topk, int64), 1009_int64), real32) / &
-                 504.5_real32 - 1.0_real32
+      input(i) = real(c_rand(), real32) / rand_max * 2.0_real32 - 1.0_real32
     end do
   end subroutine initialize_input
 
@@ -108,7 +123,8 @@ contains
     !$omp target update from(output(1:int(num_tokens, int64) * int(hidden_size, int64)))
     ok = all(abs(output - r_output) <= 1.0e-4_real32)
     write(*,'(A)') merge('PASS', 'FAIL', ok)
-    io_bytes = real(repeat, real32) * real(size(input) + size(output), real32) * 4.0_real32
+    io_bytes = real(repeat, real32) * &
+         real(size(input, kind=int64) + size(output, kind=int64), real32) * 4.0_real32
     bandwidth = io_bytes / real(elapsed_ns, real32)
     write(*,'(A,F0.6,A)') 'Kernel bandwidth: ', bandwidth, ' GB/s '
   end subroutine run_moe_sum
@@ -139,7 +155,8 @@ contains
     !$omp target update from(output_vec(1:int(num_tokens, int64) * int(hidden_size, int64)))
     ok = all(abs(output - output_vec) <= 1.0e-6_real32)
     write(*,'(A)') merge('PASS', 'FAIL', ok)
-    io_bytes = real(repeat, real32) * real(size(input) + size(output_vec), real32) * 4.0_real32
+    io_bytes = real(repeat, real32) * &
+         real(size(input, kind=int64) + size(output_vec, kind=int64), real32) * 4.0_real32
     bandwidth_vec = io_bytes / real(elapsed_ns, real32)
     bandwidth = scalar_bandwidth
     pct = 100.0_real32 * (bandwidth_vec - bandwidth) / bandwidth

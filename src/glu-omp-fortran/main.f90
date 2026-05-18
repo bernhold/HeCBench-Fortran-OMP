@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg1, arg2, arg3
   integer :: ndims, dim_size, repeat
@@ -39,9 +52,7 @@ program main
   nelems = size_from_dim(1, xshape)
   allocate(x(nelems), y(nelems), y_ref(nelems))
 
-  do i = 1, int(nelems)
-    x(i) = real(mod(37 * (i - 1) + 11, 1201), real32) / 100.0_real32 - 6.0_real32
-  end do
+  call initialize_input(x)
   y = 0.0_real32
   y_ref = 0.0_real32
 
@@ -70,7 +81,7 @@ program main
     end do
     end_time = omp_get_wtime()
     elapsed_us = (end_time - start_time) * 1.0e6_real64 / real(repeat, real64)
-    print '(A,I0,A,F8.6,A)', 'Average execution time of GLU kernel (split dimension = ', &
+    print '(A,I0,A,F0.6,A)', 'Average execution time of GLU kernel (split dimension = ', &
         split_index - 1, '): ', elapsed_us, ' (us)'
 
     !$omp target update from(y(1:nelems))
@@ -95,6 +106,17 @@ program main
   deallocate(xshape, yshape, x, y, y_ref)
 
 contains
+
+  subroutine initialize_input(x)
+    real(real32), intent(out) :: x(:)
+    integer(c_int), parameter :: rand_max = huge(0_c_int)
+    integer :: idx
+
+    call c_srand(123_c_int)
+    do idx = 1, size(x)
+      x(idx) = real(12.0_real64 * real(c_rand(), real64) / real(rand_max, real64) - 6.0_real64, real32)
+    end do
+  end subroutine initialize_input
 
   integer(int64) function size_from_dim(k, dims)
     integer, intent(in) :: k

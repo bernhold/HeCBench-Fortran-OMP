@@ -1,27 +1,30 @@
 module perplexity_mod
-  use iso_fortran_env, only: int32, int64, real32, real64
+  use iso_fortran_env, only: real32, real64
+  use iso_c_binding, only: c_int
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name="rand")
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
 contains
-
-  pure integer(int32) function next_rand(state) result(value)
-    integer(int32), intent(inout) :: state
-    integer(int64) :: tmp
-
-    tmp = mod(1103515245_int64 * int(state, int64) + 12345_int64, 2147483648_int64)
-    state = int(tmp, int32)
-    value = iand(ishft(state, -16), int(z'7fff', int32))
-  end function next_rand
 
   subroutine fill_random(values)
     real(real32), intent(out) :: values(0:)
-    integer(int32) :: state
     integer :: i
 
-    state = 123_int32
+    call c_srand(123_c_int)
     do i = 0, size(values) - 1
-      values(i) = real(next_rand(state), real32) / 32767.0_real32
+      values(i) = real(c_rand(), real32) / 2147483647.0_real32
     end do
   end subroutine fill_random
 

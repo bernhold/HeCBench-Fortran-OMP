@@ -1,5 +1,6 @@
 program channel_sum_main
-  use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_fortran_env, only : real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -7,10 +8,21 @@ program channel_sum_main
   integer :: w, h, repeat, n, c, numel, hxw
   integer :: i
   integer, allocatable :: x(:), sum_out(:), sumsq(:), ref_sum(:)
-  integer(int64) :: seed
   real(real64) :: elapsed
   character(len=64) :: arg
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 3) then
     write(*,'("Usage: ./main <width> <height> <repeat>")')
@@ -36,9 +48,9 @@ program channel_sum_main
       numel = n * c * hxw
       allocate(x(0:numel-1), sum_out(0:c-1), sumsq(0:c-1), ref_sum(0:c-1))
 
-      seed = int(numel, int64)
+      call c_srand(int(numel, c_int))
       do i = 0, numel - 1
-        x(i) = next_mod_256(seed)
+        x(i) = mod(c_rand(), 256_c_int)
       end do
 
       !$omp target data map(to: x) map(from: sum_out, sumsq)
@@ -196,11 +208,5 @@ contains
       end if
     end do
   end function check_values
-
-  integer function next_mod_256(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_mod_256 = int(mod(seed, 256_int64))
-  end function next_mod_256
 
 end program channel_sum_main

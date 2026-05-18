@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
 
@@ -12,8 +13,19 @@ program main
   integer, parameter :: prob_sizes(0:3) = [12288, 24576, 36864, 73728]
 
   character(len=256) :: arg0, arg
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   integer :: size_class, iteration, n_atom, i, total_pairs
-  integer(int32) :: seed
   integer, allocatable :: neighbor_list(:)
   real(real32), allocatable :: pos_x(:), pos_y(:), pos_z(:)
   real(real32), allocatable :: force_x(:), force_y(:), force_z(:)
@@ -36,11 +48,11 @@ program main
 
   write(*,'(A)') 'Initializing test problem (this can take several minutes for large problems).'
 
-  seed = 123_int32
+  call c_srand(123_c_int)
   do i = 1, n_atom
-    pos_x(i) = real(modulo(c_rand(seed), domain_edge), real32)
-    pos_y(i) = real(modulo(c_rand(seed), domain_edge), real32)
-    pos_z(i) = real(modulo(c_rand(seed), domain_edge), real32)
+    pos_x(i) = real(modulo(c_rand(), domain_edge), real32)
+    pos_y(i) = real(modulo(c_rand(), domain_edge), real32)
+    pos_z(i) = real(modulo(c_rand(), domain_edge), real32)
   end do
 
   write(*,'(A)') 'Finished.'
@@ -221,14 +233,5 @@ contains
     end do
     write(*,'(A,ES12.5)') 'Max error between host and device: ', max_error
   end subroutine check_results
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
 end program main

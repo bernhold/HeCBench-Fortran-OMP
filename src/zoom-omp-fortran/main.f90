@@ -1,12 +1,26 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
   use omp_lib
   implicit none
 
   real(real32), parameter :: pi = 3.1415926535897932384626433832795_real32
+  integer(c_int), parameter :: c_rand_max = huge(0_c_int)
   character(len=256) :: arg
   integer :: input_sizes(4), repeat
   real(real32) :: zf(2)
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 5) then
     call get_command_argument(0, arg)
@@ -44,7 +58,6 @@ contains
     integer(int64) :: pitch, img_size
     real(real32), allocatable :: input_img(:), output_img(:), output_img_ref(:)
     integer(int64) :: i
-    integer(int64) :: seed
     logical :: is_zoom_out, is_zoom_in, ok
     real(real64) :: start_time, elapsed
 
@@ -86,9 +99,9 @@ contains
 
     img_size = pitch * int(batch_size, int64)
     allocate(input_img(0:img_size - 1), output_img(0:img_size - 1), output_img_ref(0:img_size - 1))
-    seed = 123_int64
+    call c_srand(123_c_int)
     do i = 0, img_size - 1
-      input_img(i) = normal_sample(seed)
+      input_img(i) = normal_sample()
     end do
     output_img = 0.0_real32
     output_img_ref = 0.0_real32
@@ -147,20 +160,15 @@ contains
     out = ceiling(value)
   end function ceil_real32
 
-  real(real32) function normal_sample(seed) result(value)
-    integer(int64), intent(inout) :: seed
+  real(real32) function normal_sample() result(value)
     real(real32) :: u1, u2
-    u1 = max(uniform_sample(seed), tiny(1.0_real32))
-    u2 = uniform_sample(seed)
+    u1 = max(uniform_sample(), tiny(1.0_real32))
+    u2 = uniform_sample()
     value = sqrt(-2.0_real32 * log(u1)) * cos(2.0_real32 * pi * u2)
   end function normal_sample
 
-  real(real32) function uniform_sample(seed) result(value)
-    integer(int64), intent(inout) :: seed
-    integer(int64), parameter :: modulus = 2147483647_int64
-    integer(int64), parameter :: multiplier = 48271_int64
-    seed = modulo(multiplier * seed, modulus)
-    value = real(seed, real32) / real(modulus, real32)
+  real(real32) function uniform_sample() result(value)
+    value = real(c_rand(), real32) / real(c_rand_max, real32)
   end function uniform_sample
 
   subroutine zoom_in_kernel(input_tensor, output_tensor, input_h, input_w, output_h, output_w, pitch, &

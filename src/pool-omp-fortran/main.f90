@@ -1,7 +1,22 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0
   integer :: batch_size, input_channels, input_height, input_width
@@ -42,12 +57,13 @@ program main
   allocate(input(input_numel), output(output_numel), output_grad(output_numel))
   allocate(input_grad(input_numel), input_grad_ref(input_numel))
 
+  call c_srand(123_c_int)
   do i = 1, input_numel
-    input(i) = deterministic_unit_float(i)
+    input(i) = real(c_rand(), real32) / real(c_rand_max, real32)
   end do
 
   do i = 1, output_numel
-    output(i) = deterministic_unit_float(input_numel + i)
+    output(i) = real(c_rand(), real32) / real(c_rand_max, real32)
     output_grad(i) = real(input_width * input_height, real32)
   end do
 
@@ -97,14 +113,6 @@ contains
     call get_command_argument(position, buffer)
     read(buffer, *) read_arg
   end function read_arg
-
-  real(real32) function deterministic_unit_float(i)
-    integer, intent(in) :: i
-    integer(int64) :: value
-
-    value = modulo(1103515245_int64 * int(i, int64) + 12345_int64, 2147483647_int64)
-    deterministic_unit_float = real(value, real32) / 2147483647.0_real32
-  end function deterministic_unit_float
 
   subroutine pool2d_grad_device(nthreads, input_data, output_data, output_grad, channels, input_height, input_width, &
                                 output_height, output_width, ksize_height, ksize_width, stride_height, stride_width, &

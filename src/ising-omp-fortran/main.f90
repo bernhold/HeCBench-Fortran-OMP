@@ -1,10 +1,23 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int8, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   real(real32), parameter :: tcrit = 2.26918531421_real32
   integer, parameter :: threads = 128
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer(int64) :: nx, ny, seed
   integer :: nwarmup, niters, total_cells, i
@@ -137,12 +150,10 @@ contains
   subroutine fill_randvals(randvals, seed)
     real(real32), intent(out) :: randvals(:)
     integer(int64), intent(in) :: seed
-    integer(int64) :: state
     integer :: i
-    state = max(1_int64, seed)
+    call c_srand(int(seed, c_int))
     do i = 1, size(randvals)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      randvals(i) = real(state, real32) / 2147483647.0_real32
+      randvals(i) = real(c_rand(), real32) / 2147483647.0_real32
     end do
   end subroutine fill_randvals
 

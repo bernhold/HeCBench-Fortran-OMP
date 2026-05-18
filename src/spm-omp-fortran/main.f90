@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
   use omp_lib
   implicit none
 
@@ -34,6 +35,18 @@ program main
   integer(int32), allocatable :: threshold(:), threshold_ref(:), hist_device(:), hist_host(:)
   real(real32) :: matrix(16)
   real(real64) :: start_time, end_time
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 2) then
     print '(A)', 'Usage: ./main <dimension> <repeat>'
@@ -90,18 +103,14 @@ contains
   subroutine initialize_inputs(matrix, f, g)
     real(real32), intent(out) :: matrix(:)
     integer(int32), intent(out) :: f(:), g(:)
-    integer(int64) :: state
     integer :: i
-    state = 123_int64
+    call c_srand(123_c_int)
     do i = 1, size(matrix)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      matrix(i) = real(state, real32) / 2147483647.0_real32
+      matrix(i) = real(c_rand(), real32) / 2147483647.0_real32
     end do
     do i = 1, size(f)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      f(i) = int(mod(abs(state), 256_int64), int32)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      g(i) = int(mod(abs(state), 256_int64), int32)
+      f(i) = int(mod(c_rand(), 256_c_int), int32)
+      g(i) = int(mod(c_rand(), 256_c_int), int32)
     end do
   end subroutine initialize_inputs
 

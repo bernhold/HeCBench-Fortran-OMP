@@ -1,7 +1,20 @@
 program entropy_main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: width, height, repeat, i
   integer :: input_size
@@ -9,7 +22,6 @@ program entropy_main
   real(real32), allocatable :: output(:), output_ref(:)
   real(real32) :: log_table(0:25)
   real(real64) :: start_time, elapsed
-  integer(int64) :: seed
   character(len=64) :: arg
   logical :: ok
 
@@ -36,9 +48,9 @@ program entropy_main
     end if
   end do
 
-  seed = 123_int64
+  call c_srand(123_c_int)
   do i = 0, input_size - 1
-    input(i) = next_mod_16(seed)
+    input(i) = int(mod(c_rand(), 16_c_int))
   end do
 
   !$omp target data map(to: input, log_table) map(from: output)
@@ -194,11 +206,5 @@ contains
     real(real32), intent(in) :: value
     log2_real = log(value) / log(2.0_real32)
   end function log2_real
-
-  integer function next_mod_16(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_mod_16 = int(mod(seed, 16_int64))
-  end function next_mod_16
 
 end program entropy_main

@@ -1,13 +1,27 @@
 program main
   use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg1, arg2
   integer :: length, repeat, i
   integer, allocatable :: y(:)
   real(real32), allocatable :: x1(:), x2(:), dout(:), dx1(:), dx2(:), rdx1(:), rdx2(:)
   real(real32), parameter :: margin = 0.01_real32
+  real(real32), parameter :: rand_max = 2147483647.0_real32
   real(real64) :: start_time, end_time, elapsed_us
   logical :: ok
 
@@ -25,11 +39,12 @@ program main
 
   allocate(y(length), x1(length), x2(length), dout(length), dx1(length), dx2(length), rdx1(length), rdx2(length))
 
+  call c_srand(123_c_int)
   do i = 1, length
-    x1(i) = real(mod(17 * (i - 1) + 3, 401), real32) / 100.0_real32 - 2.0_real32
-    x2(i) = real(mod(29 * (i - 1) + 5, 401), real32) / 100.0_real32 - 2.0_real32
-    dout(i) = real(mod(43 * (i - 1) + 7, 401), real32) / 100.0_real32 - 2.0_real32
-    if (mod(53 * (i - 1) + 11, 2) == 0) then
+    x1(i) = random_uniform_signed()
+    x2(i) = random_uniform_signed()
+    dout(i) = random_uniform_signed()
+    if (random_uniform_signed() < 0.0_real32) then
       y(i) = -1
     else
       y(i) = 1
@@ -82,6 +97,13 @@ program main
   deallocate(y, x1, x2, dout, dx1, dx2, rdx1, rdx2)
 
 contains
+
+  function random_uniform_signed() result(value)
+    real(real32) :: value
+
+    value = real(c_rand(), real32) / rand_max
+    value = value * 4.0_real32 - 2.0_real32
+  end function random_uniform_signed
 
   subroutine mrc_gradient(n, y, x1, x2, dout, margin, dx1, dx2)
     integer, intent(in) :: n

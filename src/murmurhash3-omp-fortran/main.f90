@@ -1,7 +1,20 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: block_size = 256
   character(len=256) :: arg0
@@ -25,8 +38,9 @@ program main
   allocate(length(num_keys), offsets(num_keys + 1))
   offsets(1) = 0_int32
   total_length = 0
+  call c_srand(3_c_int)
   do i = 1, num_keys
-    length(i) = int(mod(37 * (i - 1) + 13, 10000), int32)
+    length(i) = int(mod(c_rand(), 10000_c_int), int32)
     total_length = total_length + int(length(i))
     offsets(i + 1) = int(total_length, int32)
   end do

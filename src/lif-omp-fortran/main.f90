@@ -1,10 +1,12 @@
 program lif_main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer :: neurons_per_item, num_items, num_steps
   integer :: num_neurons, i, step
+  integer(c_int), parameter :: RAND_MAX_C = 2147483647_c_int
   real(real32), parameter :: dt = 0.1_real32
   real(real32), parameter :: tau_rc = 10.0_real32
   real(real32), parameter :: tau_ref = 2.0_real32
@@ -12,11 +14,21 @@ program lif_main
   real(real32), allocatable :: voltage_host(:), reftime_host(:), spikes_host(:)
   real(real32), allocatable :: bias(:), gain(:)
   real(real32), allocatable :: spike_reftime(:), spike_reftime_host(:)
-  integer(int64) :: seed
   integer :: num_spikes, num_spikes_host, compare_count
   real(real64) :: start_time, elapsed_us
   character(len=64) :: arg
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name="rand")
+      import :: c_int
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 3) then
     write(*,'("Usage: ./main <neurons per item> <num_items> <num_steps>")')
@@ -36,19 +48,19 @@ program lif_main
   allocate(voltage_host(0:num_neurons-1), reftime_host(0:num_neurons-1), spikes_host(0:num_neurons-1))
   allocate(spike_reftime(0:num_neurons-1), spike_reftime_host(0:num_neurons-1))
 
-  seed = 123_int64
+  call c_srand(123_c_int)
   do i = 0, num_items - 1
-    encode_result(i) = next_unit(seed)
+    encode_result(i) = rand_unit()
   end do
   do i = 0, num_neurons - 1
-    voltage(i) = 1.0_real32 + next_unit(seed)
+    voltage(i) = 1.0_real32 + rand_unit()
     voltage_host(i) = voltage(i)
-    reftime(i) = real(next_mod_5(seed), real32) / 10.0_real32
+    reftime(i) = real(mod(c_rand(), 5_c_int), real32) / 10.0_real32
     reftime_host(i) = reftime(i)
   end do
   do i = 0, neurons_per_item - 1
-    bias(i) = next_unit(seed)
-    gain(i) = next_unit(seed) + 0.5_real32
+    bias(i) = rand_unit()
+    gain(i) = rand_unit() + 0.5_real32
   end do
 
   !$omp target data map(to: encode_result, bias, gain) map(from: spikes) map(tofrom: voltage, reftime)
@@ -172,16 +184,8 @@ contains
     end do
   end subroutine lif_reference
 
-  integer function next_mod_5(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_mod_5 = int(mod(seed, 5_int64))
-  end function next_mod_5
-
-  real(real32) function next_unit(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_unit = real(seed, real32) / 2147483647.0_real32
-  end function next_unit
+  real(real32) function rand_unit()
+    rand_unit = real(c_rand(), real32) / real(RAND_MAX_C, real32)
+  end function rand_unit
 
 end program lif_main

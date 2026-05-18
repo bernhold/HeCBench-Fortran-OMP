@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: group_size = 256
   character(len=256) :: arg
@@ -214,24 +227,16 @@ contains
     integer, intent(in) :: length
     real(real32), intent(in) :: range_min, range_max
     integer :: i
-    integer(int64) :: seed
+    integer(c_int) :: raw
     real(real64) :: range
 
-    seed = 123_int64
     range = real(range_max - range_min, real64) + 1.0_real64
+    call c_srand(123_c_int)
     do i = 0, length - 1
-      array(i) = range_min + real(range * real(next_rand(seed), real64) / 2147483648.0_real64, real32)
+      raw = c_rand()
+      array(i) = range_min + real(range * real(raw, real64) / 2147483648.0_real64, real32)
     end do
   end subroutine fill_random
-
-  integer(int64) function next_rand(seed) result(value)
-    integer(int64), intent(inout) :: seed
-    integer(int64), parameter :: a = 1103515245_int64
-    integer(int64), parameter :: c = 12345_int64
-    integer(int64), parameter :: m = 2147483648_int64
-    seed = modulo(a * seed + c, m)
-    value = seed
-  end function next_rand
 
   logical function compare(ref_data, data, length, epsilon) result(ok)
     real(real32), intent(in) :: ref_data(0:), data(0:), epsilon

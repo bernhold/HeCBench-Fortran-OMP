@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: max_wg_size = 256
   real(real32), parameter :: score_max = huge(1.0_real32)
@@ -84,11 +97,14 @@ contains
     integer(int32), intent(out) :: snp_data(:), ph_data(:)
     integer, intent(in) :: num_pac, num_snp
     integer :: i, j
+    call c_srand(100_c_int)
     do i = 0, num_pac - 1
       do j = 0, num_snp - 1
-        snp_data(i * num_snp + j + 1) = int(mod(17 * i + 31 * j + 7, 3), int32)
+        snp_data(i * num_snp + j + 1) = int(mod(c_rand(), 3_c_int), int32)
       end do
-      ph_data(i + 1) = int(mod(i * 13 + 5, 2), int32)
+    end do
+    do i = 0, num_pac - 1
+      ph_data(i + 1) = int(mod(c_rand(), 2_c_int), int32)
     end do
   end subroutine fill_inputs
 

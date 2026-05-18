@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int8, int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -31,6 +32,18 @@ program main
     0.34375_real32, 0.40625_real32, 0.46875_real32, 0.53125_real32, &
     0.59375_real32, 0.65625_real32, 0.71875_real32, 0.78125_real32, &
     0.84375_real32, 0.90625_real32, 0.96875_real32]
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg
   integer(int64) :: vector_size, float_size
@@ -110,30 +123,30 @@ contains
     integer(int64) :: i
     integer(int32) :: byte_value
 
+    call c_srand(19937_c_int)
     do i = 0_int64, float_size - 1_int64
-      m_qscale(i) = deterministic_real(i, 17_int64, 3_int64)
-      v_qscale(i) = deterministic_real(i, 29_int64, 5_int64)
-      g(i) = deterministic_real(i, 43_int64, 7_int64)
-      p(i) = deterministic_real(i, 61_int64, 11_int64)
+      m_qscale(i) = c_random_real()
+      v_qscale(i) = c_random_real()
+      g(i) = c_random_real()
+      p(i) = c_random_real()
       p_ref(i) = p(i)
       m_qscale_ref(i) = m_qscale(i)
       v_qscale_ref(i) = v_qscale(i)
     end do
 
     do i = 0_int64, vector_size - 1_int64
-      byte_value = int(mod(73_int64 * (i + 1_int64) + 19_int64, 256_int64), int32)
+      byte_value = min(255_int32, int(256.0_real32 * c_random_real(), int32))
       m(i) = to_int8(byte_value)
       m_ref(i) = m(i)
-      byte_value = int(mod(89_int64 * (i + 1_int64) + 23_int64, 256_int64), int32)
+      byte_value = min(255_int32, int(256.0_real32 * c_random_real(), int32))
       v(i) = to_int8(byte_value)
       v_ref(i) = v(i)
     end do
   end subroutine initialize_inputs
 
-  pure real(real32) function deterministic_real(i, multiplier, offset)
-    integer(int64), intent(in) :: i, multiplier, offset
-    deterministic_real = real(mod(multiplier * (i + 1_int64) + offset, 1009_int64), real32) / 1009.0_real32
-  end function deterministic_real
+  real(real32) function c_random_real()
+    c_random_real = real(c_rand(), real32) / real(huge(0_c_int), real32)
+  end function c_random_real
 
   pure integer(int8) function to_int8(value)
     integer(int32), intent(in) :: value

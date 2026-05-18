@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg
   integer :: width, height, img_size, num_detections, i
@@ -84,13 +97,12 @@ contains
     integer, intent(out) :: box_width(0:), box_height(0:), box_left(0:), box_top(0:)
     integer, intent(in) :: img_size, width, height, num_detections
     integer :: i
-    integer(int64) :: state
 
-    state = 123_int64
+    call c_srand(123_c_int)
     do i = 0, img_size - 1
-      input_x(i) = real(next_rand(state, 256), real32)
-      input_y(i) = real(next_rand(state, 256), real32)
-      input_z(i) = real(next_rand(state, 256), real32)
+      input_x(i) = real(rand_mod(256), real32)
+      input_y(i) = real(rand_mod(256), real32)
+      input_z(i) = real(rand_mod(256), real32)
       output_x(i) = input_x(i)
       output_y(i) = input_y(i)
       output_z(i) = input_z(i)
@@ -100,20 +112,18 @@ contains
     end do
 
     do i = 0, num_detections - 1
-      box_width(i) = 64 + next_rand(state, 128)
-      box_height(i) = 64 + next_rand(state, 128)
-      box_left(i) = next_rand(state, width - 64)
-      box_top(i) = next_rand(state, height - 64)
+      box_width(i) = 64 + rand_mod(128)
+      box_height(i) = 64 + rand_mod(128)
+      box_left(i) = rand_mod(width - 64)
+      box_top(i) = rand_mod(height - 64)
     end do
   end subroutine initialize_inputs
 
-  integer function next_rand(state, modulus)
-    integer(int64), intent(inout) :: state
+  integer function rand_mod(modulus)
     integer, intent(in) :: modulus
 
-    state = mod(1103515245_int64 * state + 12345_int64, 2147483648_int64)
-    next_rand = int(mod(state, int(modulus, int64)))
-  end function next_rand
+    rand_mod = int(modulo(c_rand(), int(modulus, c_int)))
+  end function rand_mod
 
   subroutine detection_overlay_box(input_x, input_y, input_z, output_x, output_y, output_z, &
                                    img_width, img_height, x0, y0, box_width, box_height)

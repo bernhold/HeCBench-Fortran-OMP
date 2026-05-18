@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: grid_size = 21
   integer, parameter :: n_particles = 147456
@@ -66,13 +79,10 @@ contains
   subroutine initialize_random(random_x, random_y)
     real(real32), intent(out) :: random_x(:), random_y(:)
     integer :: i
-    integer(int64) :: state
-    state = 17_int64
+    call c_srand(17_c_int)
     do i = 1, size(random_x)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      random_x(i) = real(mod(abs(state), 100), real32)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      random_y(i) = real(mod(abs(state), 100), real32)
+      random_x(i) = real(mod(c_rand(), 100_c_int), real32)
+      random_y(i) = real(mod(c_rand(), 100_c_int), real32)
     end do
   end subroutine initialize_random
 

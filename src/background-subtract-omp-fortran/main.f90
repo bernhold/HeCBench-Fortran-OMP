@@ -1,15 +1,28 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: block_size = 256
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   character(len=256) :: arg0, arg
   integer :: width, height, merged, repeat, img_size, iter, j
   integer, allocatable :: img(:), img1(:), img2(:), new_img(:), tmp(:)
   integer, allocatable :: bn(:), bn_ref(:), mp(:), tn(:), tn_ref(:)
   integer :: max_error
-  integer(int64) :: time_ticks, rng_state
+  integer(int64) :: time_ticks
   real(real64) :: start_time, kernel_time_us
 
   call get_command_argument(0, arg0)
@@ -164,12 +177,11 @@ contains
 
   subroutine seed_rng(seed)
     integer(int64), intent(in) :: seed
-    rng_state = seed
+    call c_srand(int(seed, c_int))
   end subroutine seed_rng
 
   integer function next_rand_byte() result(value)
-    rng_state = modulo(1103515245_int64 * rng_state + 12345_int64, 2147483648_int64)
-    value = int(modulo(rng_state / 65536_int64, 256_int64))
+    value = int(modulo(int(c_rand(), int64), 256_int64))
   end function next_rand_byte
 
 end program main

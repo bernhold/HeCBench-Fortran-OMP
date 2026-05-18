@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only: c_int
   use, intrinsic :: iso_fortran_env, only: int32, int64, real32, real64
   use omp_lib, only: omp_get_wtime
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: kernel_radius = 8
   integer, parameter :: kernel_length = 2 * kernel_radius + 1
@@ -85,26 +98,17 @@ contains
   subroutine initialize_inputs(kernel, input, n)
     real(real32), intent(out) :: kernel(:), input(:)
     integer, intent(in) :: n
-    integer(int64) :: state
     integer :: idx
 
-    state = 2009_int64
+    call c_srand(2009_c_int)
     do idx = 1, kernel_length
-      kernel(idx) = real(c_rand_mod(state, 16), real32)
+      kernel(idx) = real(mod(c_rand(), 16_c_int), real32)
     end do
 
     do idx = 1, n
-      input(idx) = real(c_rand_mod(state, 16), real32)
+      input(idx) = real(mod(c_rand(), 16_c_int), real32)
     end do
   end subroutine initialize_inputs
-
-  integer function c_rand_mod(state, modulus)
-    integer(int64), intent(inout) :: state
-    integer, intent(in) :: modulus
-
-    state = modulo(1103515245_int64 * state + 12345_int64, 2147483648_int64)
-    c_rand_mod = int(modulo(state / 65536_int64, int(modulus, int64)))
-  end function c_rand_mod
 
   subroutine run_timed_convolution(output, buffer, input, kernel, image_w, image_h, repeat)
     real(real32), intent(inout) :: output(:), buffer(:)

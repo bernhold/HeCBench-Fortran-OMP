@@ -44,7 +44,7 @@ program main
   end do
   kernel_endtime = omp_get_wtime()
   kernel_runtime = kernel_endtime - kernel_starttime
-  print '(A,F8.6,A,I0,A)', 'total kernel time ', kernel_runtime, '(s) for ', iterations - 1_int64, ' iterations'
+  print '(A,F0.6,A,I0,A)', 'total kernel time ', kernel_runtime, '(s) for ', iterations - 1_int64, ' iterations'
   !$omp end target data
 
   call reference(m_gate_h, n_cells, vm)

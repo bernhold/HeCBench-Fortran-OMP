@@ -1,4 +1,5 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
@@ -6,6 +7,18 @@ program main
   integer, parameter :: tile_width = 16
   character(len=256) :: arg0, arg
   integer :: n_batch, channels, maps, win, hin, kernel, repeat
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 7) then
@@ -51,11 +64,13 @@ contains
 
     allocate(x(x_size), weights(w_size), y(y_size), y_ref(y_size))
 
+    call c_srand(123_c_int)
+
     do idx = 1, w_size
-      weights(idx) = real(mod(idx * 17 + 3, 31), real32)
+      weights(idx) = real(mod(c_rand(), 31_c_int), real32)
     end do
     do idx = 1, x_size
-      x(idx) = real(mod(idx * 13 + 5, 13), real32)
+      x(idx) = real(mod(c_rand(), 13_c_int), real32)
     end do
     y = -1.0_real32
     y_ref = -1.0_real32

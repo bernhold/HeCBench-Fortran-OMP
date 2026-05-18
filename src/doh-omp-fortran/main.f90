@@ -100,15 +100,30 @@ contains
 end module doh_kernels
 
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : real32, real64, int64
   use omp_lib
   use doh_kernels
   implicit none
 
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
+  real(real64), parameter :: two_pi = 6.283185307179586_real64
   integer :: h, w, repeat, img_size, i, j, y, x
   real(real32), allocatable :: input_img(:), integral_img(:), output_img(:), reference_img(:)
   real(real32) :: sigma, s
   real(real64) :: start_time, end_time, elapsed_us, checksum
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 3) then
     print '(A)', 'Usage: ./main <height> <width> <repeat>'
@@ -168,12 +183,22 @@ contains
 
   subroutine fill_input(values)
     real(real32), intent(out) :: values(:)
-    integer(int64) :: state
     integer :: idx
+    call c_srand(123_c_int)
     do idx = 1, size(values)
-      state = mod(int(idx, int64) * 1103515245_int64 + 12345_int64, 2147483647_int64)
-      values(idx) = real(mod(state, 20001_int64), real32) / 10000.0_real32 - 1.0_real32
+      values(idx) = c_normal_input()
     end do
   end subroutine fill_input
+
+  real(real32) function c_normal_input()
+    real(real64) :: u1, u2
+    u1 = max(c_rand_unit(), tiny(1.0_real64))
+    u2 = c_rand_unit()
+    c_normal_input = real(sqrt(-2.0_real64 * log(u1)) * cos(two_pi * u2), real32)
+  end function c_normal_input
+
+  real(real64) function c_rand_unit()
+    c_rand_unit = (real(c_rand(), real64) + 0.5_real64) / (real(c_rand_max, real64) + 1.0_real64)
+  end function c_rand_unit
 
 end program main

@@ -1,7 +1,20 @@
 program nlll
+  use iso_c_binding, only: c_int
   use iso_fortran_env, only: int32, int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: argc
   character(len=64) :: arg
@@ -45,15 +58,17 @@ contains
 
     allocate(input(input_size), weights(weights_size), target(target_size))
 
+    call c_srand(123_c_int)
+
     print '(A)', 'Initialization of input data may take a while..'
     do i = 1_int64, input_size
-      input(i) = uniform_real(i)
+      input(i) = rand_real()
     end do
     do i = 1_int64, weights_size
-      weights(i) = uniform_real(input_size + i)
+      weights(i) = rand_real()
     end do
     do i = 1_int64, target_size
-      target(i) = int(mod(input_size + weights_size + i - 1_int64, n_classes), int32) + 1_int32
+      target(i) = int(modulo(int(c_rand(), int64), n_classes), int32) + 1_int32
     end do
 
     size_average = .true.
@@ -76,13 +91,11 @@ contains
     deallocate(input, weights, target)
   end subroutine driver
 
-  pure real(real32) function uniform_real(index) result(value)
-    integer(int64), intent(in) :: index
-    integer(int64) :: mixed
+  real(real32) function rand_real() result(value)
+    integer(int64), parameter :: rand_max = 2147483647_int64
 
-    mixed = modulo(index * 1103515245_int64 + 12345_int64, 2147483647_int64)
-    value = real(mixed, real32) / 1073741823.5_real32 - 1.0_real32
-  end function uniform_real
+    value = 2.0_real32 * (real(c_rand(), real32) / real(rand_max, real32)) - 1.0_real32
+  end function rand_real
 
   subroutine reference_nll(output, total_weight, input, target, weights, size_average, &
                            nframe, kdim, ignore_index)

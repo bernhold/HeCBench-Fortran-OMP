@@ -332,7 +332,8 @@ contains
       min_t = minval(timings(i, 2:num_times))
       max_t = maxval(timings(i, 2:num_times))
       avg_t = sum(timings(i, 2:num_times)) / real(num_times - 1, real64)
-      bandwidth = 1.0e-6_real64 * real(factors(i) * bytes_per_value * array_size, real64) / min_t
+      bandwidth = 1.0e-6_real64 * real(factors(i), real64) * &
+        real(bytes_per_value, real64) * real(array_size, real64) / min_t
       write(*, '(A,4(ES12.5))') labels(i), bandwidth, min_t, max_t, avg_t
     end do
     print *

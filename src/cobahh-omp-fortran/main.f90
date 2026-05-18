@@ -1,11 +1,22 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int8, int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int8, real32, real64
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name='rand')
+      import :: c_int
+    end function c_rand
+  end interface
+
   character(len=256) :: arg0, arg
   integer :: neurons, iterations
-  integer(int32) :: seed
   real(real32), allocatable :: ge(:), gi(:), h(:), m(:), n(:), v(:), lastspike(:)
   real(real32), allocatable :: ref_ge(:), ref_gi(:), ref_h(:), ref_m(:), ref_n(:), ref_v(:), ref_lastspike(:)
   integer(int8), allocatable :: not_refract(:), ref_not_refract(:)
@@ -27,8 +38,8 @@ program main
   allocate(ref_lastspike(neurons), not_refract(neurons), ref_not_refract(neurons))
 
   write(*,'(A)', advance='no') 'initializing ... '
-  seed = 2_int32
-  call initialize_inputs(ge, gi, h, m, n, v, lastspike, not_refract, seed)
+  call c_srand(2_c_int)
+  call initialize_inputs(ge, gi, h, m, n, v, lastspike, not_refract)
   ref_ge = ge
   ref_gi = gi
   ref_h = h
@@ -55,41 +66,30 @@ program main
 
 contains
 
-  subroutine initialize_inputs(ge, gi, h, m, n, v, lastspike, not_refract, seed)
+  subroutine initialize_inputs(ge, gi, h, m, n, v, lastspike, not_refract)
     real(real32), intent(out) :: ge(:), gi(:), h(:), m(:), n(:), v(:), lastspike(:)
     integer(int8), intent(out) :: not_refract(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(ge)
-      ge(i) = 0.15_real32 + merge(0.1_real32, -0.1_real32, next_rand_mod(seed, 2) == 0)
-      gi(i) = 0.25_real32 + merge(0.2_real32, -0.2_real32, next_rand_mod(seed, 2) == 0)
-      h(i) = 0.35_real32 + merge(0.3_real32, -0.3_real32, next_rand_mod(seed, 2) == 0)
-      m(i) = 0.45_real32 + merge(0.4_real32, -0.4_real32, next_rand_mod(seed, 2) == 0)
-      n(i) = 0.55_real32 + merge(0.5_real32, -0.5_real32, next_rand_mod(seed, 2) == 0)
-      v(i) = 0.65_real32 + merge(0.6_real32, -0.6_real32, next_rand_mod(seed, 2) == 0)
-      lastspike(i) = 1.0_real32 / real(next_rand_mod(seed, 1000) + 1, real32)
+      ge(i) = 0.15_real32 + merge(0.1_real32, -0.1_real32, next_rand_mod(2) == 0)
+      gi(i) = 0.25_real32 + merge(0.2_real32, -0.2_real32, next_rand_mod(2) == 0)
+      h(i) = 0.35_real32 + merge(0.3_real32, -0.3_real32, next_rand_mod(2) == 0)
+      m(i) = 0.45_real32 + merge(0.4_real32, -0.4_real32, next_rand_mod(2) == 0)
+      n(i) = 0.55_real32 + merge(0.5_real32, -0.5_real32, next_rand_mod(2) == 0)
+      v(i) = 0.65_real32 + merge(0.6_real32, -0.6_real32, next_rand_mod(2) == 0)
+      lastspike(i) = 1.0_real32 / real(next_rand_mod(1000) + 1, real32)
       not_refract(i) = 0_int8
     end do
   end subroutine initialize_inputs
 
-  integer function next_rand_mod(seed, divisor)
-    integer(int32), intent(inout) :: seed
+  integer function next_rand_mod(divisor)
     integer, intent(in) :: divisor
-    integer(int32) :: value
+    integer(c_int) :: value
 
-    value = c_rand(seed)
+    value = c_rand()
     next_rand_mod = modulo(value, divisor)
   end function next_rand_mod
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   integer function timestep(time_value, step)
     real(real32), intent(in) :: time_value, step

@@ -1,5 +1,6 @@
 program main
   use iso_fortran_env, only: real32, real64
+  use iso_c_binding, only: c_double, c_long
   use omp_lib
   implicit none
 
@@ -11,6 +12,19 @@ program main
   integer, parameter :: max_block_size = 16384 * 1024
   integer, parameter :: block_size = 128
   real(real32), parameter :: scalar = 1.75_real32
+  integer(c_long), parameter :: triad_seed = 8650341_c_long
+
+  interface
+    subroutine c_srand48(seedval) bind(C, name='srand48')
+      import :: c_long
+      integer(c_long), value :: seedval
+    end subroutine c_srand48
+
+    function c_drand48() bind(C, name='drand48') result(value)
+      import :: c_double
+      real(c_double) :: value
+    end function c_drand48
+  end interface
 
   logical :: verbose
   integer :: n_passes
@@ -70,6 +84,8 @@ contains
     allocate(a0(0:max_block_size - 1), b0(0:max_block_size - 1), c0(0:max_block_size - 1))
     allocate(a1(0:max_block_size - 1), b1(0:max_block_size - 1), c1(0:max_block_size - 1))
 
+    call c_srand48(triad_seed)
+
     !$omp target data map(alloc: a0(0:max_block_size - 1), b0(0:max_block_size - 1), &
     !$omp& c0(0:max_block_size - 1), a1(0:max_block_size - 1), b1(0:max_block_size - 1), &
     !$omp& c1(0:max_block_size - 1))
@@ -80,8 +96,7 @@ contains
       end do
 
       do j = 0, half_num_floats - 1
-        call random_number(a0(j))
-        a0(j) = a0(j) * 10.0_real32
+        a0(j) = real(c_drand48() * 10.0_c_double, real32)
         a0(half_num_floats + j) = a0(j)
         b0(j) = a0(j)
         b0(half_num_floats + j) = a0(j)

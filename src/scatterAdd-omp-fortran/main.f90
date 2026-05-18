@@ -1,9 +1,22 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: max_threads_per_block = 512
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg
   integer :: batch_size, output_size, vector_dim, repeat
@@ -31,7 +44,6 @@ contains
   subroutine index_accumulate(batch_size, output_size, vector_dim, repeat)
     integer, intent(in) :: batch_size, output_size, vector_dim, repeat
     integer :: i, iter
-    integer(int32) :: seed
     integer, allocatable :: index(:)
     real(real32), allocatable :: source(:), output(:), output_ref(:)
     real(real64) :: start_time, elapsed
@@ -42,9 +54,9 @@ contains
     allocate(output(output_size * vector_dim))
     allocate(output_ref(output_size * vector_dim))
 
-    seed = 2_int32
+    call c_srand(2_c_int)
     do i = 1, batch_size
-      index(i) = modulo(c_rand(seed), output_size)
+      index(i) = modulo(int(c_rand()), output_size)
     end do
     source = -1.0_real32
     output = 0.0_real32
@@ -148,14 +160,5 @@ contains
     end do
     !$omp end target teams distribute parallel do
   end subroutine scatter_add2_kernel
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
 end program main

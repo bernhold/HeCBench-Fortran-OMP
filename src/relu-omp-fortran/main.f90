@@ -1,9 +1,23 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   character(len=256) :: arg0
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer, parameter :: n_vec = 4
   integer, parameter :: vec_len(n_vec) = [1, 2, 4, 8]
   integer :: count, repeat, vl, iv, i
@@ -24,8 +38,9 @@ program main
 
   allocate(h_gradient(count), h_feature(count), h_backprop(count), r_backprop(count))
 
+  call c_srand(19937_c_int)
   do i = 1, count
-    h_feature(i) = deterministic_signed_unit_float(i)
+    h_feature(i) = c_signed_unit_float()
     h_gradient(i) = 1.0_real32
   end do
 
@@ -58,7 +73,7 @@ program main
 
   allocate(h_in(count), h_out(count), r_out(count))
   do i = 1, count
-    h_in(i) = make_packed_input(i)
+    h_in(i) = make_packed_input()
   end do
 
   call relu_reference(count, h_in, r_out)
@@ -109,22 +124,20 @@ contains
     end if
   end subroutine print_status
 
-  real(real32) function deterministic_signed_unit_float(i)
-    integer, intent(in) :: i
-    integer(int64) :: value
+  real(real32) function c_signed_unit_float()
+    integer(c_int) :: value
 
-    value = modulo(1103515245_int64 * int(i, int64) + 12345_int64, 2147483647_int64)
-    deterministic_signed_unit_float = 2.0_real32 * (real(value, real32) / 2147483647.0_real32) - 1.0_real32
-  end function deterministic_signed_unit_float
+    value = c_rand()
+    c_signed_unit_float = 2.0_real32 * (real(value, real32) / real(c_rand_max, real32)) - 1.0_real32
+  end function c_signed_unit_float
 
-  integer(int32) function make_packed_input(i)
-    integer, intent(in) :: i
+  integer(int32) function make_packed_input()
     integer(int32) :: b0, b1, b2, b3
 
-    b0 = int(mod(17 * i + 3, 256), int32)
-    b1 = int(mod(31 * i + 5, 256), int32)
-    b2 = int(mod(47 * i + 7, 256), int32)
-    b3 = int(mod(61 * i + 11, 256), int32)
+    b0 = int(mod(c_rand(), 256_c_int), int32)
+    b1 = int(mod(c_rand(), 256_c_int), int32)
+    b2 = int(mod(c_rand(), 256_c_int), int32)
+    b3 = int(mod(c_rand(), 256_c_int), int32)
     make_packed_input = ior(ior(b0, ishft(b1, 8)), ior(ishft(b2, 16), ishft(b3, 24)))
   end function make_packed_input
 

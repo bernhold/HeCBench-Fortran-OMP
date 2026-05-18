@@ -1,4 +1,5 @@
 FC        = amdflang
+CC        = amdclang
 OPTIMIZE  ?= yes
 DEBUG     ?= no
 DEVICE    ?= gpu
@@ -7,16 +8,20 @@ LAUNCHER  ?=
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+csource = rand_bridge.c
+obj     = $(source:.f90=.o) $(csource:.c=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
+CFLAGS := $(EXTRA_CFLAGS) -Wall
 
 ifeq ($(DEBUG),yes)
   FFLAGS += -g
+  CFLAGS += -g
 endif
 
 ifeq ($(OPTIMIZE),yes)
   FFLAGS += -O3
+  CFLAGS += -O3
 endif
 
 ifeq ($(DEVICE),gpu)
@@ -33,6 +38,9 @@ $(program): $(obj)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

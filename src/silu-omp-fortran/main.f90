@@ -1,8 +1,22 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer, parameter :: block_sizes(5) = [64, 128, 256, 512, 1024]
   integer :: b, c, h, w, repeat, bs, i
   integer(int64) :: n
@@ -23,9 +37,12 @@ program main
   n = int(b, int64) * int(c, int64) * int(h, int64) * int(w, int64)
 
   allocate(x(n), dout(n), out_ref(n), dx_ref(n), d_out(n), d_dx(n))
+  call c_srand(0_c_int)
   do i = 1, int(n)
-    x(i) = deterministic_float(i)
-    dout(i) = deterministic_float(i + int(n))
+    x(i) = c_signed_unit_float()
+  end do
+  do i = 1, int(n)
+    dout(i) = c_signed_unit_float()
   end do
 
   call silu_forward_reference(x, out_ref, n)
@@ -109,13 +126,12 @@ contains
     read(buffer, *) read_arg
   end function read_arg
 
-  real(real32) function deterministic_float(i)
-    integer, intent(in) :: i
-    integer(kind=8) :: value
+  real(real32) function c_signed_unit_float()
+    integer(c_int) :: value
 
-    value = mod(1103515245_8 * int(i, kind=8) + 12345_8, 2147483647_8)
-    deterministic_float = 2.0_real32 * (real(value, real32) / 2147483647.0_real32) - 1.0_real32
-  end function deterministic_float
+    value = c_rand()
+    c_signed_unit_float = 2.0_real32 * (real(value, real32) / real(c_rand_max, real32)) - 1.0_real32
+  end function c_signed_unit_float
 
   real(real32) function silu_value(xv)
     real(real32), intent(in) :: xv

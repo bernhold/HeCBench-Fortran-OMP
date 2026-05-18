@@ -1,13 +1,27 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: natom = 5877
   integer, parameter :: ngrid = 134918
   integer, parameter :: ngadj = ngrid + (512 - iand(ngrid, 511))
+  real(real32), parameter :: c_rand_max = 2147483647.0_real32
   real(real32), parameter :: pre1 = 4.46184985145e19_real32
   real(real32), parameter :: xkappa = 0.0735516324639_real32
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name='rand')
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: itmax, wgsize
   real(real32), allocatable :: ax(:), ay(:), az(:), gx(:), gy(:), gz(:)
@@ -72,33 +86,30 @@ contains
   subroutine gendata(ax, ay, az, gx, gy, gz, charge, atom_size)
     real(real32), intent(out) :: ax(:), ay(:), az(:), gx(:), gy(:), gz(:), charge(:), atom_size(:)
     integer :: i
-    integer(int64) :: seed
 
     write(*,'(A)') 'Generating Data.. '
-    seed = 1_int64
+    call c_srand(1_c_int)
     do i = 1, natom
-      ax(i) = next_rand(seed)
-      ay(i) = next_rand(seed)
-      az(i) = next_rand(seed)
-      charge(i) = next_rand(seed)
+      ax(i) = next_rand()
+      ay(i) = next_rand()
+      az(i) = next_rand()
+      charge(i) = next_rand()
       atom_size(i) = real(natom, real32)
     end do
     gx = 0.0_real32
     gy = 0.0_real32
     gz = 0.0_real32
     do i = 1, ngrid
-      gx(i) = next_rand(seed)
-      gy(i) = next_rand(seed)
-      gz(i) = next_rand(seed)
+      gx(i) = next_rand()
+      gy(i) = next_rand()
+      gz(i) = next_rand()
     end do
     write(*,'(A)') 'Done generating inputs.'
     write(*,*)
   end subroutine gendata
 
-  real(real32) function next_rand(seed) result(value)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    value = real(seed, real32) / 2147483647.0_real32
+  real(real32) function next_rand() result(value)
+    value = real(c_rand(), real32) / c_rand_max
   end function next_rand
 
   subroutine run_cpu_kernel(itmax, ax, ay, az, gx, gy, gz, charge, atom_size, val)

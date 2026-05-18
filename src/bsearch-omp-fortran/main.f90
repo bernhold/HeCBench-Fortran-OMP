@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : real32, real64, int64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: num_elem, repeat, a_size, z_size, n
   integer :: i
@@ -58,12 +71,10 @@ contains
   subroutine fill_queries(z, n)
     real(real32), intent(out) :: z(:)
     integer, intent(in) :: n
-    integer(int64) :: state
     integer :: idx
-    state = 2_int64
+    call c_srand(2_c_int)
     do idx = 1, size(z)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-      z(idx) = real(mod(state, int(n, int64)), real32)
+      z(idx) = real(mod(c_rand(), int(n, c_int)), real32)
     end do
   end subroutine fill_queries
 

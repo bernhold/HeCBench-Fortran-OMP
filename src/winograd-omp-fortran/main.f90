@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name="rand")
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: map_size = 1024
   integer, parameter :: out_map_size = map_size - 2
@@ -78,12 +91,10 @@ contains
 
   subroutine initialize_input(a)
     real(real32), intent(out) :: a(:)
-    integer(int64) :: seed
     integer :: idx
-    seed = 1_int64
+    call c_srand(1_c_int)
     do idx = 1, size(a)
-      seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-      a(idx) = real(seed, real32) / 2147483647.0_real32
+      a(idx) = real(c_rand(), real32) / 2147483647.0_real32
     end do
   end subroutine initialize_input
 

@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: x_dim = 11
   integer, parameter :: y_dim = 40
@@ -47,7 +60,7 @@ program main
     end do
   end do
 
-  !$omp target data map(to: emis, trans, like, start) map(tofrom: cur) map(alloc: next)
+  !$omp target data map(to: emis, trans, like, start) map(tofrom: cur, next)
   start_time = omp_get_wtime()
   do count = 1, repeat
     do i = 1, x_dim
@@ -89,12 +102,13 @@ contains
     real(real64), intent(out) :: start(0:batch-1,0:nstate-1)
     integer :: i, j, b, s, t, a, c
 
+    call c_srand(123_c_int)
     do i = 0, x_dim
       do j = 0, y_dim
         do b = 0, batch - 1
           do s = 0, nstate - 1
-            cur(i,j,b,s) = value_for(i, j, b, s, 1)
-            emis(i,j,b,s) = value_for(i, j, b, s, 2)
+            cur(i,j,b,s) = next_random()
+            emis(i,j,b,s) = next_random()
           end do
         end do
       end do
@@ -103,36 +117,30 @@ contains
       do b = 0, batch - 1
         do s = 0, nstate - 1
           do t = 0, states - 1
-            trans(i,b,s,t) = value_for(i, b, s, t, 3)
+            trans(i,b,s,t) = next_random()
           end do
         end do
       end do
     end do
     do b = 0, batch - 1
       do s = 0, nstate - 1
-        start(b,s) = value_for(b, s, 0, 0, 4)
+        start(b,s) = next_random()
       end do
     end do
     do a = 0, 1
       do c = 0, 1
         do b = 0, batch - 1
           do s = 0, nstate - 1
-            like(a,c,b,s) = value_for(a, c, b, s, 5)
+            like(a,c,b,s) = next_random()
           end do
         end do
       end do
     end do
   end subroutine initialize
 
-  real(real64) function value_for(a, b, c, d, salt)
-    integer, intent(in) :: a, b, c, d, salt
-    integer(int64) :: v
-
-    v = modulo(int(a + 1, int64) * 131_int64 + int(b + 3, int64) * 197_int64 + &
-               int(c + 5, int64) * 257_int64 + int(d + 7, int64) * 389_int64 + &
-               int(salt, int64) * 421_int64, 1009_int64)
-    value_for = real(v + 1_int64, real64) / 1010.0_real64
-  end function value_for
+  real(real64) function next_random()
+    next_random = real(c_rand(), real64) / 2147483647.0_real64
+  end function next_random
 
   subroutine pair_hmm_forward_host(cur_i, cur_j, forward_in, transitions, emissions, likelihood, start_transitions, forward_out)
     integer, intent(in) :: cur_i, cur_j

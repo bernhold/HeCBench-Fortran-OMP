@@ -1,5 +1,6 @@
 program rodrigues_main
-  use, intrinsic :: iso_fortran_env, only: real32, int32
+  use, intrinsic :: iso_fortran_env, only: real32
+  use, intrinsic :: iso_c_binding, only: c_int
   use omp_lib
   implicit none
 
@@ -10,6 +11,18 @@ program rodrigues_main
   real(real32), parameter :: tolerance = 5.0e-4_real32
   real(real32) :: a, b, c, d
   real(8) :: start_time, end_time
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name="rand")
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   call parse_args(n, repeat)
 
@@ -25,10 +38,11 @@ program rodrigues_main
   allocate(x(n), y(n), z(n), x_ref(n), y_ref(n), z_ref(n))
   allocate(x4(n), y4(n), z4(n), w4(n), x4_ref(n), y4_ref(n), z4_ref(n), w4_ref(n))
 
+  call c_srand(123_c_int)
   do i = 1, n
-    a = real(mod(37_int32 * int(i, int32) + 17_int32, 8191_int32) + 1_int32, real32)
-    b = real(mod(53_int32 * int(i, int32) + 29_int32, 8191_int32) + 1_int32, real32)
-    c = real(mod(97_int32 * int(i, int32) + 43_int32, 8191_int32) + 1_int32, real32)
+    a = real(c_rand(), real32)
+    b = real(c_rand(), real32)
+    c = real(c_rand(), real32)
     d = sqrt(a * a + b * b + c * c)
     x(i) = a / d
     y(i) = b / d

@@ -1,8 +1,10 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_double, c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
 
+  real(c_double), parameter :: rand_max_plus_one = 2147483648.0_c_double
   character(len=256) :: arg0, arg
   integer :: length, iterations
   real(real32), parameter :: tolerance = 0.001_real32
@@ -12,6 +14,18 @@ program main
   real(real32) :: lower_limit, upper_limit
   real(real64) :: start_time, end_time
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 2) then
@@ -347,8 +361,9 @@ contains
     integer, intent(in) :: n, seed
     integer :: i
 
+    call c_srand(int(seed, c_int))
     do i = 0, n - 1
-      values(i) = real(mod(1103515245_int64 * int(i + seed, int64) + 12345_int64, 256_int64), real32)
+      values(i) = real(256.0_c_double * real(c_rand(), c_double) / rand_max_plus_one, real32)
     end do
   end subroutine fill_random
 

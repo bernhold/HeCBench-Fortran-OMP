@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only: c_int
   use, intrinsic :: iso_fortran_env, only: int64, real32, real64
   use omp_lib, only: omp_get_wtime
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand")
+      import :: c_int
+      integer(c_int) :: c_rand
+    end function c_rand
+  end interface
 
   integer, parameter :: block_size = 8
   integer, parameter :: dct_forward = 666
@@ -71,21 +84,13 @@ contains
   subroutine initialize_input(input, n)
     real(real32), intent(out) :: input(:)
     integer, intent(in) :: n
-    integer(int64) :: state
     integer :: i
 
-    state = 2009_int64
+    call c_srand(2009_c_int)
     do i = 1, n
-      input(i) = real(c_rand_unit(state), real32)
+      input(i) = real(c_rand(), real32) / 2147483647.0_real32
     end do
   end subroutine initialize_input
-
-  real(real64) function c_rand_unit(state)
-    integer(int64), intent(inout) :: state
-
-    state = modulo(1103515245_int64 * state + 12345_int64, 2147483648_int64)
-    c_rand_unit = real(state / 65536_int64, real64) / 32767.0_real64
-  end function c_rand_unit
 
   subroutine run_timed_dct(dst, src, stride, image_h, image_w, dir, repeat, label)
     real(real32), intent(inout) :: dst(:)

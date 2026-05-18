@@ -1,5 +1,6 @@
 module surfel_mod
-  use iso_fortran_env, only: int32, int64, real32, real64
+  use iso_c_binding, only: c_int
+  use iso_fortran_env, only: real32, real64
   use omp_lib
   implicit none
 
@@ -7,44 +8,45 @@ module surfel_mod
   integer, parameter :: col_n_x = 3, col_n_y = 4, col_n_z = 5
   integer, parameter :: col_rsq = 6, col_dim = 7
 
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
 contains
 
-  pure integer(int32) function next_rand(state) result(value)
-    integer(int32), intent(inout) :: state
-    integer(int64) :: tmp
-
-    tmp = mod(1664525_int64 * int(state, int64) + 1013904223_int64, 2147483648_int64)
-    state = int(tmp, int32)
-    value = iand(state, int(z'7fffffff', int32))
-  end function next_rand
-
-  pure real(real32) function uniform(state, lo, hi) result(value)
-    integer(int32), intent(inout) :: state
+  real(real32) function uniform(lo, hi) result(value)
     real(real32), intent(in) :: lo, hi
 
-    value = lo + (hi - lo) * real(next_rand(state), real32) / real(huge(1_int32), real32)
+    value = lo + (hi - lo) * real(c_rand(), real32) / real(huge(1_c_int), real32)
   end function uniform
 
   subroutine fill_src(src, n)
     real(real32), intent(out) :: src(0:)
     integer, intent(in) :: n
-    integer(int32) :: state
     integer :: i
     real(real32) :: nx, ny, nz, len
 
-    state = 19937_int32
+    call c_srand(19937_c_int)
     do i = 0, n - 1
-      src(i * col_dim + col_p_x) = uniform(state, -5.0_real32, 5.0_real32)
-      src(i * col_dim + col_p_y) = uniform(state, -5.0_real32, 5.0_real32)
-      src(i * col_dim + col_p_z) = uniform(state, 0.3_real32, 5.0_real32)
-      nx = uniform(state, -1.0_real32, 1.0_real32)
-      ny = uniform(state, -1.0_real32, 1.0_real32)
-      nz = uniform(state, -1.0_real32, 1.0_real32)
+      src(i * col_dim + col_p_x) = uniform(-5.0_real32, 5.0_real32)
+      src(i * col_dim + col_p_y) = uniform(-5.0_real32, 5.0_real32)
+      src(i * col_dim + col_p_z) = uniform(0.3_real32, 5.0_real32)
+      nx = uniform(-1.0_real32, 1.0_real32)
+      ny = uniform(-1.0_real32, 1.0_real32)
+      nz = uniform(-1.0_real32, 1.0_real32)
       len = sqrt(nx * nx + ny * ny + nz * nz)
       src(i * col_dim + col_n_x) = nx / len
       src(i * col_dim + col_n_y) = ny / len
       src(i * col_dim + col_n_z) = nz / len
-      src(i * col_dim + col_rsq) = uniform(state, 4.0e-4_real32, 2.5e-3_real32)
+      src(i * col_dim + col_rsq) = uniform(4.0e-4_real32, 2.5e-3_real32)
     end do
   end subroutine fill_src
 

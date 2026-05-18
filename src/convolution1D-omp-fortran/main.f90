@@ -1,10 +1,23 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int16, int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: max_mask_width = 10
   integer, parameter :: max_block_size = 1024
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: input_width, repeat, mask_width
 
@@ -48,8 +61,9 @@ contains
 
     allocate(a(input_width), b(input_width), mask(max_mask_width))
     mask = 1.0_real64
+    call c_srand(123_c_int)
     do i = 1, input_width
-      a(i) = real(mod(int(1103515245, int64) * int(i, int64) + int(12345, int64), int(256, int64)), real64)
+      a(i) = real(mod(c_rand(), 256_c_int), real64)
     end do
 
     !$omp target data map(to: a(1:input_width), mask(1:mask_width)) map(alloc: b(1:input_width))
@@ -73,8 +87,9 @@ contains
 
     allocate(a(input_width), b(input_width), mask(max_mask_width))
     mask = 1.0_real32
+    call c_srand(123_c_int)
     do i = 1, input_width
-      a(i) = real(mod(int(1103515245, int64) * int(i, int64) + int(12345, int64), int(256, int64)), real32)
+      a(i) = real(mod(c_rand(), 256_c_int), real32)
     end do
 
     !$omp target data map(to: a(1:input_width), mask(1:mask_width)) map(alloc: b(1:input_width))
@@ -98,8 +113,9 @@ contains
 
     allocate(a(input_width), b(input_width), mask(max_mask_width))
     mask = 1_int16
+    call c_srand(123_c_int)
     do i = 1, input_width
-      a(i) = int(mod(int(1103515245, int64) * int(i, int64) + int(12345, int64), int(256, int64)), int16)
+      a(i) = int(mod(c_rand(), 256_c_int), int16)
     end do
 
     !$omp target data map(to: a(1:input_width), mask(1:mask_width)) map(alloc: b(1:input_width))

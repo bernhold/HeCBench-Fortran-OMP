@@ -1,8 +1,20 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_signed_char
+  use, intrinsic :: iso_c_binding, only : c_int, c_signed_char
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg1, arg2, arg3, arg4, arg5, arg6
   integer :: rows, cols, ncases, ncontrols, nthreads, repeat
@@ -42,8 +54,9 @@ program main
   write(*,'(A,I0)') 'Size of the data = ', data_size
 
   allocate(data_t(data_size), h_results(cols), cpu_results(cols))
+  call c_srand(19937_c_int)
   do idx = 1, data_size
-    data_t(idx) = int(ichar('0') + modulo(idx + 19936_int64, 3_int64), c_signed_char)
+    data_t(idx) = int(ichar('0') + modulo(c_rand(), 3_c_int), c_signed_char)
   end do
 
   !$omp target data map(to: data_t(1:data_size)) map(from: h_results(1:cols))
@@ -52,14 +65,14 @@ program main
     call chi2_kernel(rows, cols, ncases, ncontrols, nthreads, data_t, h_results)
   end do
   end_time = omp_get_wtime()
-  write(*,'(A,F8.6,A)') 'Average kernel execution time = ', &
+  write(*,'(A,F0.6,A)') 'Average kernel execution time = ', &
     (end_time - start_time) / real(repeat, real64), ' (s)'
   !$omp end target data
 
   start_time = omp_get_wtime()
   call cpu_kernel(rows, cols, ncases, ncontrols, data_t, cpu_results)
   end_time = omp_get_wtime()
-  write(*,'(A,F8.6,A)') 'Host execution time = ', end_time - start_time, ' (s)'
+  write(*,'(A,F0.6,A)') 'Host execution time = ', end_time - start_time, ' (s)'
 
   error_count = 0
   do k = 1, cols

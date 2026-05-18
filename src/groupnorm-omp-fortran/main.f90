@@ -1,4 +1,5 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
@@ -15,6 +16,17 @@ program main
   real(real32), allocatable :: out_dev(:), mean_dev(:), rstd_dev(:)
   real(real32), allocatable :: dx_dev(:), dweight_dev(:), dbias_dev(:)
   real(real64) :: elapsed
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name='rand')
+      import :: c_int
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 6) then
     call get_command_argument(0, progname)
@@ -41,6 +53,7 @@ program main
   allocate(out_dev(total), mean_dev(ng), rstd_dev(ng))
   allocate(dx_dev(total), dweight_dev(channels), dbias_dev(channels))
 
+  call c_srand(0_c_int)
   call fill_random(x)
   call fill_random(weight)
   call fill_random(bias)
@@ -108,11 +121,11 @@ contains
   subroutine fill_random(a)
     real(real32), intent(out) :: a(:)
     integer :: i
-    integer(int64) :: state
-    state = 12345_int64 + int(size(a), int64)
+    integer(c_int) :: raw
+    real(real32), parameter :: rand_max = 2147483647.0_real32
     do i = 1, size(a)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483648_int64)
-      a(i) = real(state, real32) / 1073741824.0_real32 - 1.0_real32
+      raw = c_rand()
+      a(i) = real(raw, real32) / rand_max * 2.0_real32 - 1.0_real32
     end do
   end subroutine fill_random
 

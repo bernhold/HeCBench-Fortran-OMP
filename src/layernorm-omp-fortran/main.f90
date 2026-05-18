@@ -1,15 +1,26 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_float, c_int
   use omp_lib
   implicit none
 
   integer, parameter :: block_sizes(6) = [32, 64, 128, 256, 512, 1024]
   real(real32), parameter :: eps = 1.0e-5_real32
 
+  interface
+    subroutine hecbench_srand(seed) bind(C, name='hecbench_srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine hecbench_srand
+
+    real(c_float) function hecbench_rand_float() bind(C, name='hecbench_rand_float')
+      import :: c_float
+    end function hecbench_rand_float
+  end interface
+
   character(len=256) :: arg0, arg
   integer :: bsz, tsz, csz, repeat, i, block_size
   integer(int64) :: n_btc, n_bt, memory_ops
-  integer(int32) :: seed
   real(real32), allocatable :: out(:), d_out(:), mean(:), d_mean(:), rstd(:), d_rstd(:)
   real(real32), allocatable :: inp(:), weight(:), bias(:)
   real(real64) :: start_time, elapsed_ms, bandwidth
@@ -31,10 +42,10 @@ program main
   allocate(out(n_btc), d_out(n_btc), mean(n_bt), d_mean(n_bt), rstd(n_bt), d_rstd(n_bt))
   allocate(inp(n_btc), weight(csz), bias(csz))
 
-  seed = 0_int32
-  call fill_random(inp, seed)
-  call fill_random(weight, seed)
-  call fill_random(bias, seed)
+  call hecbench_srand(0_c_int)
+  call fill_random(inp)
+  call fill_random(weight)
+  call fill_random(bias)
 
   !$omp target data map(to: inp(1:n_btc), weight(1:csz), bias(1:csz)) &
   !$omp& map(tofrom: d_out(1:n_btc), d_mean(1:n_bt), d_rstd(1:n_bt))
@@ -71,13 +82,12 @@ program main
 
 contains
 
-  subroutine fill_random(values, seed)
+  subroutine fill_random(values)
     real(real32), intent(out) :: values(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(values)
-      values(i) = real(c_rand(seed), real32) / 32767.0_real32 * 2.0_real32 - 1.0_real32
+      values(i) = real(hecbench_rand_float(), real32)
     end do
   end subroutine fill_random
 
@@ -187,15 +197,6 @@ contains
     end do
     if (nfaults > 0) stop 1
   end subroutine validate_result
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   logical function ieee_is_finite(value)
     real(real32), intent(in) :: value

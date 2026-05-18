@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -12,6 +13,18 @@ program main
   real(real32), allocatable :: in_data(:), device_out(:), work(:), host_out(:)
   real(real64) :: start_time, end_time
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 2) then
     write(*,'(A,A)') 'Usage: ', './main <signal length> <repeat>'
@@ -105,12 +118,10 @@ contains
 
   subroutine initialize_input(data)
     real(real32), intent(out) :: data(:)
-    integer(int64) :: seed
     integer :: idx
-    seed = 2_int64
+    call c_srand(2_c_int)
     do idx = 1, size(data)
-      seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-      data(idx) = real(mod(seed / 65536_int64, 10_int64), real32)
+      data(idx) = real(mod(c_rand(), 10_c_int), real32)
     end do
   end subroutine initialize_input
 

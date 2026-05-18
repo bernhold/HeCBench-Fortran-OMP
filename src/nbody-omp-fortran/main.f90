@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
   use omp_lib
   implicit none
 
@@ -12,6 +13,18 @@ program main
 
   integer(int32) :: npart, nsteps
   character(len=256) :: arg
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   npart = 16000_int32
   nsteps = 10_int32
@@ -63,44 +76,36 @@ contains
   subroutine initialize_particles(particles)
     type(particle), intent(out) :: particles(:)
     integer(int32) :: i
-    integer(int64) :: state_pos, state_vel, state_mass
 
-    state_pos = 42_int64
-    state_vel = 42_int64
-    state_mass = 42_int64
-
+    call c_srand(42_c_int)
     do i = 1, size(particles)
-      particles(i)%pos(1) = rand_uniform(state_pos, 0.0_real32, 1.0_real32)
-      particles(i)%pos(2) = rand_uniform(state_pos, 0.0_real32, 1.0_real32)
-      particles(i)%pos(3) = rand_uniform(state_pos, 0.0_real32, 1.0_real32)
+      particles(i)%pos(1) = rand_uniform(0.0_real32, 1.0_real32)
+      particles(i)%pos(2) = rand_uniform(0.0_real32, 1.0_real32)
+      particles(i)%pos(3) = rand_uniform(0.0_real32, 1.0_real32)
     end do
 
+    call c_srand(42_c_int)
     do i = 1, size(particles)
-      particles(i)%vel(1) = rand_uniform(state_vel, -1.0_real32, 1.0_real32) * 1.0e-3_real32
-      particles(i)%vel(2) = rand_uniform(state_vel, -1.0_real32, 1.0_real32) * 1.0e-3_real32
-      particles(i)%vel(3) = rand_uniform(state_vel, -1.0_real32, 1.0_real32) * 1.0e-3_real32
+      particles(i)%vel(1) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
+      particles(i)%vel(2) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
+      particles(i)%vel(3) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
     end do
 
     do i = 1, size(particles)
       particles(i)%acc = 0.0_real32
     end do
 
+    call c_srand(42_c_int)
     do i = 1, size(particles)
-      particles(i)%mass = real(size(particles), real32) * rand_uniform(state_mass, 0.0_real32, 1.0_real32)
+      particles(i)%mass = real(size(particles), real32) * rand_uniform(0.0_real32, 1.0_real32)
     end do
   end subroutine initialize_particles
 
-  real(real32) function rand_uniform(state, low, high) result(value)
-    integer(int64), intent(inout) :: state
+  real(real32) function rand_uniform(low, high) result(value)
     real(real32), intent(in) :: low, high
-    integer(int64), parameter :: a = 6364136223846793005_int64
-    integer(int64), parameter :: c = 1442695040888963407_int64
-    integer(int64) :: bits
     real(real32) :: unit
 
-    state = a * state + c
-    bits = iand(ishft(state, -40), int(z'FFFFFF', int64))
-    unit = real(bits, real32) / real(int(z'1000000', int64), real32)
+    unit = real(c_rand(), real32) / 2147483647.0_real32
     value = low + (high - low) * unit
   end function rand_uniform
 

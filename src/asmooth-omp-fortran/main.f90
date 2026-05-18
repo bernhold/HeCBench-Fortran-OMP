@@ -1,29 +1,32 @@
 module asmooth_mod
-  use iso_fortran_env, only: int32, int64, real32, real64
+  use iso_c_binding, only: c_int
+  use iso_fortran_env, only: real32
   use omp_lib
   implicit none
 
   integer, parameter :: block_size = 256
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
 contains
-
-  pure integer(int32) function next_rand(state) result(value)
-    integer(int32), intent(inout) :: state
-    integer(int64) :: tmp
-
-    tmp = mod(1103515245_int64 * int(state, int64) + 12345_int64, 2147483648_int64)
-    state = int(tmp, int32)
-    value = iand(ishft(state, -16), int(z'7fff', int32))
-  end function next_rand
 
   subroutine fill_image(img)
     real(real32), intent(out) :: img(0:)
-    integer(int32) :: state
     integer :: i
 
-    state = 123_int32
+    call c_srand(123_c_int)
     do i = 0, size(img) - 1
-      img(i) = real(mod(next_rand(state), 256), real32)
+      img(i) = real(mod(c_rand(), 256_c_int), real32)
     end do
   end subroutine fill_image
 

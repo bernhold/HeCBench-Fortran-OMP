@@ -1,7 +1,20 @@
 program minmax
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: repeat, n
   real(real32) :: box_size
@@ -127,7 +140,7 @@ contains
     real(real32), allocatable :: tlx(:), tly(:), brx(:), bry(:)
     real(real32) :: cur_tlx, cur_tly, cur_brx, cur_bry, area_x, area_y, phi
     integer :: rect_capacity, rects, nrect_points, offset, i, j
-    integer(int64) :: seed
+    real(real32), parameter :: rand_max = 2147483647.0_real32
 
     phi = (1.0_real32 + sqrt(5.0_real32)) * 0.5_real32
     cur_tlx = 0.0_real32
@@ -169,22 +182,17 @@ contains
     end do
 
     allocate(px(total_points), py(total_points))
-    seed = 123_int64
+    call c_srand(123_c_int)
     offset = 0
     do i = 1, rects
       do j = 1, rect_counts(i)
         offset = offset + 1
-        px(offset) = tlx(i) + (brx(i) - tlx(i)) * next_unit(seed)
-        py(offset) = tly(i) + (bry(i) - tly(i)) * next_unit(seed)
+        px(offset) = tlx(i) + (brx(i) - tlx(i)) * &
+          (real(c_rand(), real32) / rand_max)
+        py(offset) = tly(i) + (bry(i) - tly(i)) * &
+          (real(c_rand(), real32) / rand_max)
       end do
     end do
   end subroutine generate_points
-
-  real(real32) function next_unit(seed)
-    integer(int64), intent(inout) :: seed
-
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_unit = real(seed, real32) / 2147483647.0_real32
-  end function next_unit
 
 end program minmax

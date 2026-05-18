@@ -1,12 +1,26 @@
 program main
   use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg1, arg2, arg3
   integer :: outer_size, inner_size, repeat, input_size, output_size
   integer :: i, iter, log_d, log_d_trick, unjoined_lr_loss
   real(real32), allocatable :: logits(:), targets(:), output(:), ref_output(:)
+  real(real32), parameter :: rand_max = 2147483647.0_real32
   real(real64) :: start_time, end_time, elapsed_us
   logical :: ok
 
@@ -28,9 +42,10 @@ program main
   output_size = outer_size
   allocate(logits(input_size), targets(input_size), output(output_size), ref_output(output_size))
 
+  call c_srand(123_c_int)
   do i = 1, input_size
-    logits(i) = real(mod(37 * (i - 1) + 13, 401), real32) / 100.0_real32 - 2.0_real32
-    targets(i) = real(mod(19 * (i - 1) + 5, 401), real32) / 100.0_real32 - 1.0_real32
+    logits(i) = random_uniform_signed()
+    targets(i) = random_uniform_signed() + 1.0_real32
   end do
 
   ok = .true.
@@ -78,6 +93,13 @@ program main
   deallocate(logits, targets, output, ref_output)
 
 contains
+
+  function random_uniform_signed() result(value)
+    real(real32) :: value
+
+    value = real(c_rand(), real32) / rand_max
+    value = value * 4.0_real32 - 2.0_real32
+  end function random_uniform_signed
 
   real(real32) function sigmoid_xent_forward(lgt, tgt)
     real(real32), intent(in) :: lgt, tgt

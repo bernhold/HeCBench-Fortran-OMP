@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -7,11 +8,23 @@ program main
   integer, parameter :: t_size = 1024
   integer, parameter :: c_size = 768
   integer, parameter :: num_heads = 12
+  real(real32), parameter :: rand_max_real = 2147483647.0_real32
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg
   integer :: batch_size, repeat_times, block_size, i
   integer(int64) :: s, total_in
-  integer(int32) :: seed
   real(real32), allocatable :: inp(:), out(:), q(:), k(:), v(:)
   real(real64) :: start_time, elapsed_ms
 
@@ -29,12 +42,12 @@ program main
   total_in = 3_int64 * s
   allocate(inp(total_in), out(total_in), q(s), k(s), v(s))
 
-  seed = 1_int32
-  call fill_random(inp, seed)
-  call fill_random(out, seed)
-  call fill_random(q, seed)
-  call fill_random(k, seed)
-  call fill_random(v, seed)
+  call c_srand(1_c_int)
+  call fill_random(inp)
+  call fill_random(out)
+  call fill_random(q)
+  call fill_random(k)
+  call fill_random(v)
 
   call permute_cpu(inp, q, k, v, batch_size, t_size, c_size, num_heads)
 
@@ -65,13 +78,13 @@ program main
 
 contains
 
-  subroutine fill_random(values, seed)
+  subroutine fill_random(values)
     real(real32), intent(out) :: values(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(values)
-      values(i) = real(c_rand(seed), real32) / 32767.0_real32 * 2.0_real32 - 1.0_real32
+      ! Preserve the C++ original's implicit srand(1)/rand() input stream.
+      values(i) = real(c_rand(), real32) / rand_max_real * 2.0_real32 - 1.0_real32
     end do
   end subroutine fill_random
 
@@ -158,14 +171,5 @@ contains
     end do
     if (nfaults > 0) stop 1
   end subroutine validate_result
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
 end program main

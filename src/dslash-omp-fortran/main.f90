@@ -1,4 +1,5 @@
 program dslash_main
+  use iso_c_binding, only: c_int
   use iso_fortran_env, only: int64, real64, output_unit
   use omp_lib, only: omp_get_wtime
   implicit none
@@ -10,6 +11,18 @@ program dslash_main
   integer, parameter :: total_sites = ldim * ldim * ldim * ldim
   integer, parameter :: even_sites = total_sites / 2
   real(dp), parameter :: eps = 2.0e-6_dp
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: workgroup_size, arg_status
   character(len=64) :: arg
@@ -144,21 +157,25 @@ contains
     real(dp) :: values(2)
     integer :: site, dir
 
-    call random_seed()
+    call c_srand(123_c_int)
     do site = 1, total_sites
-      call random_number(values)
+      values = (/ c_rand_unit(), c_rand_unit() /)
       src_r(:,site) = 2.0_dp * values(1) - 1.0_dp
       src_i(:,site) = 2.0_dp * values(2) - 1.0_dp
       do dir = 1, 4
-        call random_number(values)
+        values = (/ c_rand_unit(), c_rand_unit() /)
         fat_r(:,:,dir,site) = 2.0_dp * values(1) - 1.0_dp
         fat_i(:,:,dir,site) = 2.0_dp * values(2) - 1.0_dp
-        call random_number(values)
+        values = (/ c_rand_unit(), c_rand_unit() /)
         lng_r(:,:,dir,site) = 2.0_dp * values(1) - 1.0_dp
         lng_i(:,:,dir,site) = 2.0_dp * values(2) - 1.0_dp
       end do
     end do
   end subroutine make_data
+
+  real(dp) function c_rand_unit() result(value)
+    value = real(c_rand(), dp) / real(huge(0_c_int), dp)
+  end function c_rand_unit
 
   real(dp) function dslash_fn(src_r, src_i, dst_r, dst_i, fat_r, fat_i, lng_r, lng_i, &
                               fatbck_r, fatbck_i, lngbck_r, lngbck_i, &

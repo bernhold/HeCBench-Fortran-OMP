@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   type :: properties_t
     real(real32) :: k
@@ -20,7 +33,6 @@ program main
   integer :: width, height, repeat_count, image_size
   real(real32) :: coeff, new_center_x, new_center_y, xshift_2, yshift_2
   type(properties_t) :: prop
-  integer(int32) :: seed
   integer(int32), allocatable :: src_r(:), src_g(:), src_b(:)
   integer(int32), allocatable :: dst_r(:), dst_g(:), dst_b(:)
   integer(int32), allocatable :: ref_r(:), ref_g(:), ref_b(:)
@@ -59,8 +71,8 @@ program main
   allocate(dst_r(image_size), dst_g(image_size), dst_b(image_size))
   allocate(ref_r(image_size), ref_g(image_size), ref_b(image_size))
 
-  seed = 123_int32
-  call fill_image(src_r, src_g, src_b, seed)
+  call c_srand(123_c_int)
+  call fill_image(src_r, src_g, src_b)
 
   call run_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop, repeat_count)
   call reference(src_r, src_g, src_b, ref_r, ref_g, ref_b, prop)
@@ -87,35 +99,24 @@ contains
     end if
   end function calc_shift
 
-  subroutine fill_image(src_r, src_g, src_b, seed)
+  subroutine fill_image(src_r, src_g, src_b)
     integer(int32), intent(out) :: src_r(:), src_g(:), src_b(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(src_r)
-      src_r(i) = next_rand_mod(seed, 256)
-      src_g(i) = next_rand_mod(seed, 256)
-      src_b(i) = next_rand_mod(seed, 256)
+      src_r(i) = next_rand_mod(256)
+      src_g(i) = next_rand_mod(256)
+      src_b(i) = next_rand_mod(256)
     end do
   end subroutine fill_image
 
-  integer function next_rand_mod(seed, divisor)
-    integer(int32), intent(inout) :: seed
+  integer function next_rand_mod(divisor)
     integer, intent(in) :: divisor
-    integer(int32) :: value
+    integer(c_int) :: value
 
-    value = c_rand(seed)
+    value = c_rand()
     next_rand_mod = modulo(value, divisor)
   end function next_rand_mod
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   subroutine run_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop, repeat_count)
     integer(int32), intent(in) :: src_r(:), src_g(:), src_b(:)

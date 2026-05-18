@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real64
   use omp_lib
   implicit none
 
@@ -15,6 +16,18 @@ program main
   real(real64), allocatable :: ref0(:), ref1234(:), ref5678(:)
   real(real64) :: e(2, 9), w(9)
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 1) then
     write(*,'(A)') 'Usage %s <iterations>'
@@ -72,16 +85,15 @@ contains
     integer, intent(out) :: cell_type(:)
     real(real64), intent(out) :: if0(:), if1234(:), if5678(:)
     integer :: x, y, pos, base, den
-    integer(int64) :: seed
     real(real64) :: u0(2)
 
-    seed = 123_int64
+    call c_srand(123_c_int)
     u0 = [0.01_real64, 0.01_real64]
     do y = 1, height
       do x = 1, width
         pos = x + (y - 1) * width
         base = 4 * (pos - 1)
-        den = next_density(seed)
+        den = mod(c_rand(), 10_c_int) + 1
         if0(pos) = compute_feq(real(den, real64), w(1), e(:, 1), u0)
         if1234(base + 1) = compute_feq(real(den, real64), w(2), e(:, 2), u0)
         if1234(base + 2) = compute_feq(real(den, real64), w(3), e(:, 3), u0)
@@ -99,12 +111,6 @@ contains
       end do
     end do
   end subroutine init_problem
-
-  integer function next_density(seed) result(value)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    value = int(mod(seed / 65536_int64, 10_int64)) + 1
-  end function next_density
 
   real(real64) function compute_feq(rho, weight, dir, velocity) result(value)
     real(real64), intent(in) :: rho, weight, dir(2), velocity(2)

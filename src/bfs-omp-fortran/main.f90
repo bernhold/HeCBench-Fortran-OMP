@@ -62,7 +62,7 @@ contains
     character(len=*), intent(in) :: path
     integer, intent(out) :: no_of_nodes, edge_list_size, source
     integer, allocatable, intent(out) :: node_start(:), node_edges(:), graph_edges(:)
-    integer :: unit, ios, idx, edge_id, edge_cost
+    integer :: unit, ios, idx, edge_cost
 
     open(newunit=unit, file=path, status='old', action='read', iostat=ios)
     if (ios /= 0) then
@@ -79,10 +79,7 @@ contains
     source = 0
     read(unit, *) edge_list_size
     allocate(graph_edges(edge_list_size))
-    do idx = 1, edge_list_size
-      read(unit, *) edge_id, edge_cost
-      graph_edges(idx) = edge_id
-    end do
+    read(unit, *) (graph_edges(idx), edge_cost, idx = 1, edge_list_size)
     close(unit)
   end subroutine read_graph
 

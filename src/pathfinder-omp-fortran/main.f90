@@ -1,4 +1,5 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
@@ -8,6 +9,17 @@ program main
   integer :: left_col, right_col, active_parity, mismatches
   integer(int32), allocatable :: wall(:), path_a(:), path_b(:), reference(:)
   real(real64) :: offload_start, offload_end, kernel_start, kernel_end
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name="rand")
+      import :: c_int
+    end function c_rand
+  end interface
 
   if (command_argument_count() == 3) then
     cols = read_arg(1)
@@ -87,10 +99,11 @@ contains
     integer(int32), intent(out) :: wall(:)
     integer, intent(in) :: rows, cols
     integer :: i, j, idx
+    call c_srand(int(m_seed, c_int))
     do j = 1, rows
       do i = 1, cols
         idx = (j - 1) * cols + i
-        wall(idx) = int(mod(i * 17 + j * 31 + m_seed, 10), int32)
+        wall(idx) = int(mod(c_rand(), 10_c_int), int32)
       end do
     end do
   end subroutine initialize_wall

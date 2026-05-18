@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
 
@@ -7,6 +8,18 @@ program main
   integer :: n, seed, size, i
   integer(int32), allocatable :: data_cpu(:), data_gpu(:)
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 2) then
@@ -26,8 +39,9 @@ program main
   print '(A,I0,A,I0)', 'Array size: ', size, ', seed: ', seed
 
   allocate(data_cpu(size), data_gpu(size))
+  call c_srand(int(seed, c_int))
   do i = 1, size
-    data_cpu(i) = deterministic_value(seed, i)
+    data_cpu(i) = int(mod(c_rand(), 1000_c_int), int32)
     data_gpu(i) = data_cpu(i)
   end do
 
@@ -75,14 +89,6 @@ contains
     print '(A)', '    exponent between 0 and 29.'
     print '(A)', ' k: Seed used to generate a random sequence.'
   end subroutine usage
-
-  integer(int32) function deterministic_value(seed, index)
-    integer, intent(in) :: seed, index
-    integer(int64) :: value
-
-    value = modulo(1103515245_int64 * int(seed + index, int64) + 12345_int64, 2147483647_int64)
-    deterministic_value = int(mod(value, 1000_int64), int32)
-  end function deterministic_value
 
   subroutine parallel_bitonic_sort(input, n)
     integer(int32), intent(inout) :: input(:)

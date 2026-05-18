@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -8,6 +9,19 @@ program main
   real(real64), allocatable :: history(:), extrema(:)
   real(real64) :: start_time, end_time, avg_us
   logical :: ok
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 2) stop 1
   num_history = read_arg(1)
@@ -15,10 +29,11 @@ program main
   if (num_history <= 0 .or. repeat <= 0) stop 1
 
   allocate(history_lengths(num_history + 1), result_lengths(num_history), ref_result_lengths(num_history))
+  call c_srand(123_c_int)
   total_length = 0
   do n = 1, num_history
     history_lengths(n) = int(total_length, int32)
-    total_length = total_length + (mod(37 * (n - 1) + 5, 10) + 1) * 100
+    total_length = total_length + (mod(c_rand(), 10_c_int) + 1_c_int) * 100
   end do
   history_lengths(num_history + 1) = int(total_length, int32)
 
@@ -26,7 +41,7 @@ program main
 
   allocate(history(total_length), extrema(total_length), points(total_length))
   do i = 1, total_length
-    history(i) = real(mod(1103515245_8 * int(i, kind=8) + 12345_8, 2147483647_8), real64) / 2147483647.0_real64
+    history(i) = real(c_rand(), real64) / real(c_rand_max, real64)
   end do
 
   result_lengths = 0_int32

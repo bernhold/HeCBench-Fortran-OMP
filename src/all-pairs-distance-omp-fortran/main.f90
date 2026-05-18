@@ -1,12 +1,25 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int, c_long
   use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
 
   integer, parameter :: instances = 224, attributes = 4096
-  integer :: iterations, i
+  integer :: iterations, i, attr, instance_id
   integer(int32), allocatable :: data(:), cpu_distance(:), gpu_distance(:)
   real(real64) :: start_time, end_time, elapsed_us
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_random() bind(C, name='random') result(value)
+      import :: c_long
+      integer(c_long) :: value
+    end function c_random
+  end interface
 
   if (command_argument_count() /= 1) then
     print '(A)', 'Usage: ./main <iterations>'
@@ -16,8 +29,11 @@ program main
   if (iterations <= 0) stop 1
 
   allocate(data(instances * attributes), cpu_distance(instances * instances), gpu_distance(instances * instances))
-  do i = 1, instances * attributes
-    data(i) = int(mod(17 * (i - 1) + 5, 3), int32)
+  call c_srand(2_c_int)
+  do attr = 1, attributes
+    do instance_id = 1, instances
+      data(attr + attributes * (instance_id - 1)) = int(mod(c_random(), 3_c_long), int32)
+    end do
   end do
 
   cpu_distance = 0_int32

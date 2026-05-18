@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   type params_t
     integer :: n_gpu_threads = 64
@@ -123,12 +136,12 @@ contains
   subroutine read_input(x)
     real(real32), intent(out) :: x(:)
     integer :: i
-    integer(int64) :: state
+    integer(c_int) :: value
 
-    state = 5432_int64
+    call c_srand(5432_c_int)
     do i = 1, size(x)
-      state = mod(1103515245_int64 * state + 12345_int64, 2147483648_int64)
-      x(i) = real(mod(state / 65536_int64, 100_int64), real32) / 100.0_real32
+      value = c_rand()
+      x(i) = real(mod(value, 100_c_int), real32) / 100.0_real32
     end do
   end subroutine read_input
 

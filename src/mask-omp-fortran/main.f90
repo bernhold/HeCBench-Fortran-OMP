@@ -1,10 +1,22 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
 
   integer, parameter :: fill_val = -1
   integer :: m, n, b, repeat
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name='rand')
+      import :: c_int
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 4) then
     print '(A)', 'Usage: ./main <sequence length> <sequence length> <batch size> <repeat>'
@@ -43,12 +55,15 @@ contains
     write(*, '(A,I0,A,I0,A,I0)') 'M = ', m, ', N = ', n, ', B = ', batch_dim
 
     allocate(h_in(data_size), h_out(data_size), out_ref(data_size), seq_len(n), window(n))
+    call c_srand(123_c_int)
     do idx = 1, n
-      seq_len(idx) = mod(17 * idx + 3, max(1, m / 2))
-      window(idx) = mod(31 * idx + 7, m)
+      seq_len(idx) = int(mod(c_rand(), max(1, m / 2)), int32)
+    end do
+    do idx = 1, n
+      window(idx) = int(mod(c_rand(), m), int32)
     end do
     do idx = 1, data_size
-      h_in(idx) = mod(13 * idx + 5, max(1, m * n))
+      h_in(idx) = int(mod(c_rand(), m * n), int32)
     end do
 
     !$omp target data map(to: h_in(1:data_size), seq_len(1:n), window(1:n)) map(alloc: h_out(1:data_size))

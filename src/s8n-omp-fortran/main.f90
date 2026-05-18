@@ -1,7 +1,19 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name="rand")
+      import :: c_int
+    end function c_rand
+  end interface
 
   integer :: b, n, repeat, input_size, output_size, radius
   integer :: i, error_count
@@ -87,12 +99,10 @@ contains
 
   subroutine fill_input(values)
     integer, intent(out) :: values(:)
-    integer(int64) :: state
     integer :: idx
-    state = 123_int64
+    call c_srand(123_c_int)
     do idx = 1, size(values)
-      state = mod(state * 16807_int64, 2147483647_int64)
-      values(idx) = int((state * 512_int64) / 2147483647_int64) - 256
+      values(idx) = modulo(int(c_rand()), 512) - 256
     end do
   end subroutine fill_input
 

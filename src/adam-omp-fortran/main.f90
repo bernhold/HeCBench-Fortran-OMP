@@ -1,7 +1,20 @@
 program main
   use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg1, arg2, arg3
   integer :: vector_size, time_step, repeat
@@ -12,6 +25,7 @@ program main
   real(real32), parameter :: beta2 = 0.999_real32
   real(real32), parameter :: eps = 1.0e-10_real32
   real(real32), parameter :: grad_scale = 256.0_real32
+  real(real32), parameter :: rand_max = 2147483647.0_real32
   real(real64) :: start_time, end_time, cr, cp
   integer :: i
   logical :: ok
@@ -33,6 +47,7 @@ program main
 
   allocate(m(vector_size), v(vector_size), g(vector_size), p(vector_size), r(vector_size))
   allocate(m_ref(vector_size), v_ref(vector_size))
+  call c_srand(19937_c_int)
   call initialize_vectors(vector_size, m, v, g, p)
   r = p
   m_ref = m
@@ -77,12 +92,18 @@ contains
     integer :: i
 
     do i = 1, vector_size
-      m(i) = real(mod(17 * i + 3, 1009), real32) / 1009.0_real32
-      v(i) = real(mod(29 * i + 5, 1009), real32) / 1009.0_real32
-      g(i) = real(mod(43 * i + 7, 1009), real32) / 1009.0_real32
-      p(i) = real(mod(61 * i + 11, 1009), real32) / 1009.0_real32
+      m(i) = random_uniform_unit()
+      v(i) = random_uniform_unit()
+      g(i) = random_uniform_unit()
+      p(i) = random_uniform_unit()
     end do
   end subroutine initialize_vectors
+
+  function random_uniform_unit() result(value)
+    real(real32) :: value
+
+    value = real(c_rand(), real32) / rand_max
+  end function random_uniform_unit
 
   subroutine adam_kernel(p, m, v, g, b1, b2, eps, grad_scale, step_size, time_step, vector_size, decay)
     real(real32), intent(inout) :: p(:), m(:), v(:)

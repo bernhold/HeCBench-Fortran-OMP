@@ -1,33 +1,37 @@
 module bwt_mod
-  use iso_fortran_env, only: int32, int64, real64
+  use iso_fortran_env, only: int32, real64
+  use iso_c_binding, only: c_int
   use omp_lib
   implicit none
 
   integer, parameter :: block_size = 256
   integer, parameter :: etx = 0
 
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
 contains
-
-  pure integer(int32) function next_rand(state) result(value)
-    integer(int32), intent(inout) :: state
-    integer(int64) :: tmp
-
-    tmp = mod(1103515245_int64 * int(state, int64) + 12345_int64, 2147483648_int64)
-    state = int(tmp, int32)
-    value = iand(ishft(state, -16), int(z'7fff', int32))
-  end function next_rand
 
   subroutine generate_sequence(sequence, n)
     integer(int32), intent(out) :: sequence(0:)
     integer, intent(in) :: n
-    integer(int32) :: rng
-    integer :: i, pick
+    integer :: i
+    integer(c_int) :: pick
     integer(int32), parameter :: alphabet(0:3) = [iachar('A'), iachar('T'), iachar('C'), iachar('G')]
 
-    rng = 123_int32
+    call c_srand(123_c_int)
     do i = 0, n - 1
-      pick = mod(next_rand(rng), 4)
-      sequence(i) = alphabet(pick)
+      pick = mod(c_rand(), 4_c_int)
+      sequence(i) = alphabet(int(pick))
     end do
     sequence(n) = etx
   end subroutine generate_sequence

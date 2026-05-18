@@ -318,7 +318,7 @@ program main
 
     write(*,'(A)', advance='no') 'Average dense, sparse, and vector sparse kernel execution time (ms):'
     do i = 1, 3
-      write(*,'(1X,F8.6)', advance='no') elapsed(i) * 1.0e-6_real64 / real(repeat, real64)
+      write(*,'(1X,F0.6)', advance='no') elapsed(i) * 1.0e-6_real64 / real(repeat, real64)
     end do
     write(*,*)
 

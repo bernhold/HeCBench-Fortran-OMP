@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real64
+  use, intrinsic :: iso_fortran_env, only : int32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -7,9 +8,20 @@ program main
   integer, parameter :: count = 4096
   integer, parameter :: members = 16
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   character(len=256) :: arg0, arg
   integer :: repeat_count
-  integer(int32) :: seed
   integer(int32), allocatable :: interleaved_src(:,:), interleaved_dst(:,:)
   integer(int32), allocatable :: non_interleaved_src(:,:), non_interleaved_dst(:,:)
 
@@ -26,8 +38,8 @@ program main
   allocate(interleaved_src(members, num_elements), interleaved_dst(members, num_elements))
   allocate(non_interleaved_src(num_elements, members), non_interleaved_dst(num_elements, members))
 
-  seed = 1_int32
-  call initialize(interleaved_src, interleaved_dst, non_interleaved_src, non_interleaved_dst, seed)
+  call c_srand(1_c_int)
+  call initialize(interleaved_src, interleaved_dst, non_interleaved_src, non_interleaved_dst)
   call add_test_non_interleaved(non_interleaved_dst, non_interleaved_src, repeat_count)
   call add_test_interleaved(interleaved_dst, interleaved_src, repeat_count)
   call verify(interleaved_dst, non_interleaved_dst)
@@ -36,14 +48,14 @@ program main
 
 contains
 
-  subroutine initialize(inter_src, inter_dst, non_src, non_dst, seed)
+  subroutine initialize(inter_src, inter_dst, non_src, non_dst)
     integer(int32), intent(out) :: inter_src(:,:), inter_dst(:,:), non_src(:,:), non_dst(:,:)
-    integer(int32), intent(inout) :: seed
     integer :: i, field, value
 
     do i = 1, num_elements
       do field = 1, members
-        value = next_rand_mod(seed, 16)
+        ! Preserve the C++ original's implicit srand(1)/rand() input stream.
+        value = modulo(c_rand(), 16)
         inter_src(field, i) = value
         non_src(i, field) = value
         inter_dst(field, i) = 0
@@ -51,24 +63,6 @@ contains
       end do
     end do
   end subroutine initialize
-
-  integer function next_rand_mod(seed, divisor)
-    integer(int32), intent(inout) :: seed
-    integer, intent(in) :: divisor
-    integer(int32) :: value
-
-    value = c_rand(seed)
-    next_rand_mod = modulo(value, divisor)
-  end function next_rand_mod
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   subroutine add_test_interleaved(dst, src, repeat_count)
     integer(int32), intent(inout) :: dst(:,:)

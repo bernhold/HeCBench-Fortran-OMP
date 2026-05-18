@@ -1,10 +1,24 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   integer, parameter :: block_sizes(6) = [32, 64, 128, 256, 512, 1024]
   integer, parameter :: block2d_sizes(3) = [8, 16, 32]
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer :: bsz, channels, height, width, repeat, i, block_size
   integer(int64) :: input_size, output_size
   real(real32), allocatable :: x(:), dout(:), out_ref(:), out_dev(:), dx_ref(:), dx_dev(:)
@@ -24,6 +38,7 @@ program main
   input_size = int(bsz, int64) * channels * height * width
   output_size = input_size * 4_int64
   allocate(x(input_size), dout(output_size), out_ref(output_size), out_dev(output_size), dx_ref(input_size), dx_dev(input_size))
+  call c_srand(0_c_int)
   call fill_random(x)
   call fill_random(dout)
   out_ref = 0.0_real32
@@ -134,10 +149,9 @@ contains
 
   subroutine fill_random(a)
     real(real32), intent(out) :: a(:)
-    integer(int64) :: idx, state
+    integer(int64) :: idx
     do idx = 1, int(size(a), int64)
-      state = mod(1103515245_int64 * idx + 12345_int64, 2147483648_int64)
-      a(idx) = real(state, real32) / 2147483648.0_real32 * 2.0_real32 - 1.0_real32
+      a(idx) = real(c_rand(), real32) / real(c_rand_max, real32) * 2.0_real32 - 1.0_real32
     end do
   end subroutine fill_random
 

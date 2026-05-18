@@ -1,11 +1,23 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_double, c_long
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
 
   integer, parameter :: block_size = 256
   integer, parameter :: num_floats = 2 * 1024 * 1024
   integer :: repeat
+
+  interface
+    subroutine c_srand48(seed) bind(C, name="srand48")
+      import :: c_long
+      integer(c_long), value :: seed
+    end subroutine c_srand48
+
+    real(c_double) function c_drand48() bind(C, name="drand48")
+      import :: c_double
+    end function c_drand48
+  end interface
 
   if (command_argument_count() /= 1) then
     call print_usage()
@@ -42,8 +54,9 @@ contains
     integer :: j
     real(real64) :: t0, elapsed
     allocate(data(n))
+    call c_srand48(123_c_long)
     do j = 1, n / 2
-      data(j) = real(mod(j * 1103515245_int64 + 12345_int64, 10000_int64), real32) / 1000.0_real32
+      data(j) = real(c_drand48() * 10.0_c_double, real32)
       data(n - j + 1) = data(j)
     end do
     !$omp target data map(alloc: data(1:n))
@@ -204,8 +217,9 @@ contains
     real(real64), allocatable :: data(:)
     integer :: j
     allocate(data(n))
+    call c_srand48(123_c_long)
     do j = 1, n / 2
-      data(j) = real(mod(j * 1103515245_int64 + 12345_int64, 10000_int64), real64) / 1000.0_real64
+      data(j) = real(c_drand48() * 10.0_c_double, real64)
       data(n - j + 1) = data(j)
     end do
     !$omp target data map(alloc: data(1:n))

@@ -1,7 +1,20 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine libc_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine libc_srand
+
+    function libc_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function libc_rand
+  end interface
 
   integer, parameter :: num_elements = 10000000
   integer, parameter :: block_size = 256
@@ -10,7 +23,6 @@ program main
 
   character(len=256) :: arg0, arg
   integer :: repeat, i, iter, errors
-  integer(int32) :: seed
   real(real32), allocatable :: angle(:), velocity(:)
   real(real32), allocatable :: range_out(:), time_out(:), height_out(:)
   real(real32), allocatable :: range_ref(:), time_ref(:), height_ref(:)
@@ -30,10 +42,10 @@ program main
   allocate(range_out(num_elements), time_out(num_elements), height_out(num_elements))
   allocate(range_ref(num_elements), time_ref(num_elements), height_ref(num_elements))
 
-  seed = 2_int32
+  call libc_srand(2_c_int)
   do i = 1, num_elements
-    angle(i) = real(mod(c_rand(seed), 90_int32) + 10_int32, real32)
-    velocity(i) = real(mod(c_rand(seed), 400_int32) + 10_int32, real32)
+    angle(i) = real(mod(libc_rand(), 90_c_int) + 10_c_int, real32)
+    velocity(i) = real(mod(libc_rand(), 400_c_int) + 10_c_int, real32)
   end do
 
   range_out = 0.0_real32
@@ -80,16 +92,6 @@ program main
   deallocate(angle, velocity, range_out, time_out, height_out, range_ref, time_ref, height_ref)
 
 contains
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer, parameter :: int64 = selected_int_kind(18)
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   subroutine compute_projectile(proj_angle, proj_vel, max_range, total_time, max_height)
     real(real32), intent(in) :: proj_angle, proj_vel

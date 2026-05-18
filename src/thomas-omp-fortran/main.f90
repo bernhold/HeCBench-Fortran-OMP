@@ -1,7 +1,20 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: m, nsystems, block_size, repeat
   integer(int64) :: matrix_size
@@ -92,22 +105,19 @@ contains
   subroutine load_thomas_matrix_syn(size, upper, lower, diagonal, rhs)
     integer, intent(in) :: size
     real(real64), intent(out) :: upper(:), lower(:), diagonal(:), rhs(:)
-    integer(int64) :: seed
-    integer :: idx
-    seed = 1_int64
+  integer :: idx
+    call c_srand(1_c_int)
     do idx = 1, size
-      upper(idx) = frand(seed, -2.0_real64, 2.0_real64)
-      lower(idx) = frand(seed, -2.0_real64, 2.0_real64)
-      diagonal(idx) = frand(seed, 5.0_real64, 10.0_real64)
-      rhs(idx) = frand(seed, -2.0_real64, 2.0_real64)
+      upper(idx) = frand(-2.0_real64, 2.0_real64)
+      lower(idx) = frand(-2.0_real64, 2.0_real64)
+      diagonal(idx) = frand(5.0_real64, 10.0_real64)
+      rhs(idx) = frand(-2.0_real64, 2.0_real64)
     end do
   end subroutine load_thomas_matrix_syn
 
-  real(real64) function frand(seed, fmin, fmax) result(value)
-    integer(int64), intent(inout) :: seed
+  real(real64) function frand(fmin, fmax) result(value)
     real(real64), intent(in) :: fmin, fmax
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    value = fmin + real(seed, real64) / 2147483647.0_real64 * (fmax - fmin)
+    value = fmin + real(c_rand(), real64) / 2147483647.0_real64 * (fmax - fmin)
   end function frand
 
   subroutine initialize_systems(m, nsystems, params_u, params_l, params_d, params_rhs, &

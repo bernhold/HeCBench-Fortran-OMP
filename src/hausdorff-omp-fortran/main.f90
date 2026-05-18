@@ -70,7 +70,7 @@ program main
   end do
   !$omp end target data
 
-  write(*,'(A,F8.6,A)') 'Average execution time of kernels: ', total_time_ms / real(repeat, real64), ' (ms)'
+  write(*,'(A,F0.6,A)') 'Average execution time of kernels: ', total_time_ms / real(repeat, real64), ' (ms)'
 
   write(*,'(A)') 'Verifying the result may take a while..'
   ref_distance = hausdorff_distance(ax, ay, bx, by, num_a, num_b)

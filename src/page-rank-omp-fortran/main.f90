@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -13,6 +14,18 @@ program main
   integer(int32), allocatable :: pages(:), noutlinks(:)
   real(real32), allocatable :: maps(:), ranks_gpu(:), ranks_ref(:), diffs(:)
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   n = 1000
   iter = default_iter
@@ -106,17 +119,20 @@ contains
     integer :: i, j, k
 
     pages = 0_int32
+    call c_srand(1_c_int)
     do i = 1, n
       noutlinks(i) = 0_int32
       do j = 1, n
-        if (i /= j .and. mod(17 * i + 31 * j + 7, divisor) == 0) then
+        if (i /= j .and. mod(abs(c_rand()), divisor) == 0) then
           pages((i - 1) * n + j) = 1_int32
           noutlinks(i) = noutlinks(i) + 1_int32
         end if
       end do
       if (noutlinks(i) == 0_int32) then
-        k = mod(37 * i + 11, n) + 1
-        if (k == i) k = mod(k, n) + 1
+        do
+          k = mod(abs(c_rand()), n) + 1
+          if (k /= i) exit
+        end do
         pages((i - 1) * n + k) = 1_int32
         noutlinks(i) = 1_int32
       end if

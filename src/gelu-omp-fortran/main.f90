@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg0, arg
   integer :: batch_size, seq_len, hidden_dim, repeat, block_size, i
@@ -88,12 +101,13 @@ contains
     integer(int64) :: i
     integer :: j
 
+    call c_srand(123_c_int)
     do i = 0_int64, src_size - 1_int64
-      output(i) = real(mod(1103515245_int64 * (i + 1_int64) + 12345_int64, 65536_int64), real32) / 65535.0_real32
+      output(i) = real(c_rand(), real32) / real(huge(0_c_int), real32)
       output_ref(i) = output(i)
     end do
     do j = 0, hidden_dim - 1
-      bias(j) = real(mod(17 * (j + 1) + 5, 12) - 6, real32)
+      bias(j) = real(-6_c_int + mod(c_rand(), 12_c_int), real32)
     end do
   end subroutine initialize_inputs
 

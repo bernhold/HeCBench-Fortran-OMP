@@ -1,5 +1,6 @@
 program bilateral_main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
 
@@ -8,9 +9,20 @@ program bilateral_main
   real(real32) :: variance_i, variance_spatial, a_square
   real(real32), allocatable :: src(:), dst(:), ref(:)
   real(real64) :: start_time, elapsed_ms
-  integer(int64) :: seed
   character(len=64) :: arg
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 5) then
     write(*,'("Usage: ./main <image width> <image height> <intensity> <spatial> <repeat>")')
@@ -32,9 +44,9 @@ program bilateral_main
   a_square = 0.5_real32 / (variance_i * pi)
 
   allocate(src(0:img_size-1), dst(0:img_size-1), ref(0:img_size-1))
-  seed = 123_int64
+  call c_srand(123_c_int)
   do i = 0, img_size - 1
-    src(i) = real(next_mod_256(seed), real32)
+    src(i) = real(mod(c_rand(), 256_c_int), real32)
   end do
 
   ok = .true.
@@ -171,11 +183,5 @@ contains
       end if
     end do
   end function check_values
-
-  integer function next_mod_256(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_mod_256 = int(mod(seed, 256_int64))
-  end function next_mod_256
 
 end program bilateral_main

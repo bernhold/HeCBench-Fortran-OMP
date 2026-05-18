@@ -1,11 +1,25 @@
 program matern
+  use iso_c_binding, only: c_int
   use iso_fortran_env, only: real32, real64
   use omp_lib
   implicit none
 
   integer, parameter :: nsources = 50
   integer, parameter :: sx = 16
+  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   real(real32), parameter :: sqrt5 = 2.2360679774997898_real32
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer :: argc, npoints, repeat
   character(len=64) :: arg
@@ -81,14 +95,15 @@ contains
     real(real32), intent(out) :: sources(:), targets(:), weights(:)
     integer :: i
 
+    call c_srand(123_c_int)
     do i = 1, size(sources)
-      sources(i) = real(mod(i * 1103515245 + 12345, 1048576), real32) / 1048576.0_real32
+      sources(i) = real(c_rand(), real32) / real(c_rand_max, real32)
     end do
     do i = 1, size(weights)
-      weights(i) = real(mod(i * 1664525 + 1013904223, 1048576), real32) / 1048576.0_real32
+      weights(i) = real(c_rand(), real32) / real(c_rand_max, real32)
     end do
     do i = 1, size(targets)
-      targets(i) = real(mod(i * 22695477 + 1, 1048576), real32) / 1048576.0_real32
+      targets(i) = real(c_rand(), real32) / real(c_rand_max, real32)
     end do
   end subroutine initialize_data
 

@@ -1,7 +1,20 @@
 program nw_omp_fortran
-  use, intrinsic :: iso_fortran_env, only: int32, int64, real64
+  use, intrinsic :: iso_c_binding, only: c_int
+  use, intrinsic :: iso_fortran_env, only: int32, real64
   use omp_lib, only: omp_get_wtime
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: block_size = 16
   integer, parameter :: warmup = 100
@@ -106,20 +119,20 @@ contains
   subroutine init_inputs(reference, host_items, device_items, max_rows, max_cols, penalty)
     integer(int32), intent(out) :: reference(0:), host_items(0:), device_items(0:)
     integer, intent(in) :: max_rows, max_cols, penalty
-    integer :: i, j, seed
+    integer :: i, j
 
-    seed = 7
+    call c_srand(7_c_int)
     reference = 0_int32
     host_items = 0_int32
     device_items = 0_int32
 
     do i = 1, max_rows - 1
-      host_items(i * max_cols) = next_rand10(seed)
+      host_items(i * max_cols) = int(mod(c_rand(), 10_c_int) + 1_c_int, int32)
       device_items(i * max_cols) = host_items(i * max_cols)
     end do
 
     do j = 1, max_cols - 1
-      host_items(j) = next_rand10(seed)
+      host_items(j) = int(mod(c_rand(), 10_c_int) + 1_c_int, int32)
       device_items(j) = host_items(j)
     end do
 
@@ -138,12 +151,6 @@ contains
       device_items(j) = host_items(j)
     end do
   end subroutine init_inputs
-
-  integer(int32) function next_rand10(seed)
-    integer, intent(inout) :: seed
-    seed = int(mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64))
-    next_rand10 = int(mod(seed / 65536, 10) + 1, int32)
-  end function next_rand10
 
   subroutine nw_device(items, reference, max_cols, penalty)
     integer(int32), intent(inout) :: items(0:)

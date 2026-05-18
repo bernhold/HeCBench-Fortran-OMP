@@ -1,7 +1,20 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, int64, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name='rand')
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: max_distance = 200
   integer :: num_nodes, num_iterations, block_size, block_threads
@@ -92,13 +105,11 @@ contains
     integer(int32), intent(out) :: matrix(:)
     integer, intent(in) :: num_nodes
     integer :: i, j, idx
-    integer(int64) :: state
-    state = 2_int64
+    call c_srand(2_c_int)
     do i = 1, num_nodes
       do j = 1, num_nodes
         idx = (i - 1) * num_nodes + j
-        state = mod(1103515245_int64 * state + 12345_int64, 2147483647_int64)
-        matrix(idx) = int(mod(abs(state), int(max_distance + 1, int64)), int32)
+        matrix(idx) = int(mod(int(c_rand(), int64), int(max_distance + 1, int64)), int32)
       end do
     end do
     do i = 1, num_nodes

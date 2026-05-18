@@ -1,5 +1,6 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
 
@@ -15,7 +16,18 @@ program main
   integer(int32), allocatable :: all_out_of_the_money(:)
   real(real64) :: h_price, cpu_price, ref_price, start_time, end_time, total_elapsed_ms
   integer :: run, i
-  integer(int64) :: rng_state
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   num_timesteps = 100
   num_paths_k = 32
@@ -56,13 +68,13 @@ program main
   h_price = 0.0_real64
   cpu_price = 0.0_real64
   total_elapsed_ms = 0.0_real64
-  rng_state = 1_int64
+  call c_srand(1_c_int)
 
   !$omp target data map(alloc: samples(0:num_timesteps*num_paths-1), paths(0:num_timesteps*num_paths-1), &
   !$omp& svds(0:16*num_timesteps-1), all_out_of_the_money(0:num_timesteps-1), temp_storage(0:temp_storage_size-1))
     do run = 1, num_runs
       do i = 0, num_timesteps * num_paths - 1
-        samples(i) = normal_sample(rng_state)
+        samples(i) = normal_sample()
       end do
 
       start_time = omp_get_wtime()
@@ -178,20 +190,16 @@ contains
     end if
   end subroutine require_value
 
-  real(real64) function normal_sample(state) result(value)
-    integer(int64), intent(inout) :: state
+  real(real64) function normal_sample() result(value)
     real(real64) :: u1, u2
-    u1 = max(uniform_sample(state), tiny(1.0_real64))
-    u2 = uniform_sample(state)
+    u1 = max(uniform_sample(), tiny(1.0_real64))
+    u2 = uniform_sample()
     value = sqrt(-2.0_real64 * log(u1)) * cos(2.0_real64 * pi * u2)
   end function normal_sample
 
-  real(real64) function uniform_sample(state) result(value)
-    integer(int64), intent(inout) :: state
-    integer(int64), parameter :: modulus = 2147483647_int64
-    integer(int64), parameter :: multiplier = 48271_int64
-    state = modulo(multiplier * state, modulus)
-    value = real(state, real64) / real(modulus, real64)
+  real(real64) function uniform_sample() result(value)
+    real(real64), parameter :: rand_max = 2147483647.0_real64
+    value = real(c_rand(), real64) / rand_max
   end function uniform_sample
 
   real(real64) function payoff_value(is_put, strike, s) result(value)

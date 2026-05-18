@@ -1,5 +1,6 @@
 program stddev_main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -7,8 +8,20 @@ program stddev_main
   character(len=64) :: arg
   real(real32), allocatable :: data(:), std(:), std_ref(:)
   real(real64) :: start_time, elapsed_s
-  integer(int64) :: seed
   logical :: ok
+  integer(c_int), parameter :: rand_max = 2147483647_c_int
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() result(value) bind(C, name="rand")
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 3) then
     write(*,'("Usage: ./main <D> <N> <repeat>")')
@@ -25,9 +38,9 @@ program stddev_main
   read(arg, *) repeat
 
   allocate(data(0:d*n-1), std(0:d-1), std_ref(0:d-1))
-  seed = 123_int64
+  call c_srand(123_c_int)
   do i = 0, d * n - 1
-    data(i) = next_unit(seed)
+    data(i) = real(c_rand(), real32) / real(rand_max, real32)
   end do
 
   !$omp target data map(to: data) map(from: std)
@@ -89,11 +102,5 @@ contains
       std(col) = sqrt(sumsq / real(sample_size, real32))
     end do
   end subroutine stddev_ref_kernel
-
-  real(real32) function next_unit(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    next_unit = real(seed, real32) / 2147483647.0_real32
-  end function next_unit
 
 end program stddev_main

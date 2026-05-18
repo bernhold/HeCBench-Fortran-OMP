@@ -1,9 +1,22 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int8, int32, real64
   use omp_lib
   implicit none
 
   integer, parameter :: batch_size = 1024
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=128) :: arg1, arg2, arg3, arg4
   integer :: target_size, query_size, coarse_match_length, coarse_match_threshold
@@ -78,13 +91,17 @@ contains
 
   subroutine initialize_sequences(target_sequence, query_sequence)
     integer(int8), intent(out) :: target_sequence(:), query_sequence(:)
+    integer(int8), parameter :: alphabet(4) = [ &
+        int(iachar('A'), int8), int(iachar('C'), int8), &
+        int(iachar('T'), int8), int(iachar('G'), int8)]
     integer :: i
 
+    call c_srand(123_c_int)
     do i = 1, size(target_sequence)
-      target_sequence(i) = int(mod(17 * i + 3, 4), int8)
+      target_sequence(i) = alphabet(mod(c_rand(), 4) + 1)
     end do
     do i = 1, size(query_sequence)
-      query_sequence(i) = int(mod(29 * i + 1, 4), int8)
+      query_sequence(i) = alphabet(mod(c_rand(), 4) + 1)
     end do
   end subroutine initialize_sequences
 

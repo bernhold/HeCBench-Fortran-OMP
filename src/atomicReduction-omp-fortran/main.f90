@@ -1,7 +1,20 @@
 program atomic_reduction_main
+  use, intrinsic :: iso_c_binding, only : c_int
   use, intrinsic :: iso_fortran_env, only : int32, real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   integer, parameter :: num_block_sizes = 4
   integer(int32), parameter :: block_sizes(num_block_sizes) = [128_int32, 256_int32, 512_int32, 1024_int32]
@@ -21,13 +34,14 @@ program atomic_reduction_main
     read(arg, *) repeats
   end if
 
-  write(*,'("Array size: ",G0," MB")') real(array_length * 4_int32, real64) / 1024.0_real64 / 1024.0_real64
+  write(*,'("Array size: ",G0," MB")') real(array_length, real64) * 4.0_real64 / 1024.0_real64 / 1024.0_real64
   write(*,'("Repeat the kernel execution: ",I0," times")') repeats
 
   allocate(array(0:array_length-1))
   checksum = 0_int32
+  call c_srand(1_c_int)
   do i = 0, array_length - 1
-    array(i) = int(mod(i, 2), int32)
+    array(i) = int(mod(c_rand(), 2_c_int), int32)
     checksum = checksum + array(i)
   end do
 

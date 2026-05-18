@@ -1,5 +1,6 @@
 program dense_embedding_main
-  use, intrinsic :: iso_fortran_env, only : int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
 
@@ -7,6 +8,18 @@ program dense_embedding_main
   integer, parameter :: embed_dims(num_embed_dims) = [768, 2048, 12288]
   integer :: nrows, batch_size, repeat
   character(len=64) :: arg
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   if (command_argument_count() /= 3) then
     write(*,'("Usage: ./main <number of rows> <batch size> <repeat>")')
@@ -34,7 +47,6 @@ contains
     integer, intent(in) :: nrows, batch_size, repeat
     integer :: dim_index, ncols, input_size, dense_size, block_size, i
     integer, allocatable :: offset(:)
-    integer(int64) :: seed
     real(real32), allocatable :: input(:), dense(:), output_k1(:), output_k2(:), output_k3(:), output_ref(:)
     real(real64) :: start_time, elapsed_us
     logical :: ok
@@ -50,17 +62,17 @@ contains
       allocate(output_k1(0:input_size-1), output_k2(0:input_size-1), output_k3(0:input_size-1), output_ref(0:input_size-1))
       allocate(offset(0:batch_size))
 
+      call c_srand(123_c_int)
       offset(0) = 0
       do i = 1, batch_size
-        offset(i) = offset(i-1) + (mod(i * 17 + 5, batch_size) + 1) * ncols
+        offset(i) = offset(i-1) + (mod(c_rand(), batch_size) + 1) * ncols
       end do
 
-      seed = 123_int64
       do i = 0, dense_size - 1
-        dense(i) = random_range(seed)
+        dense(i) = c_rand_range()
       end do
       do i = 0, input_size - 1
-        input(i) = random_range(seed)
+        input(i) = c_rand_range()
         output_k1(i) = 0.0_real32
         output_k2(i) = 0.0_real32
         output_k3(i) = 0.0_real32
@@ -115,11 +127,9 @@ contains
     end do
   end subroutine run_sweep
 
-  real(real32) function random_range(seed)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    random_range = -1.0_real32 + 2.0_real32 * real(seed, real32) / 2147483647.0_real32
-  end function random_range
+  real(real32) function c_rand_range()
+    c_rand_range = -1.0_real32 + 2.0_real32 * real(c_rand(), real32) / 2147483647.0_real32
+  end function c_rand_range
 
   subroutine dense_reference(input, dense, output, embedding_dim, batch_size, offset)
     real(real32), intent(in) :: input(0:), dense(0:)

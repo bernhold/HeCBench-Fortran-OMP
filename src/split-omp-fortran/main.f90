@@ -1,14 +1,26 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real64
+  use, intrinsic :: iso_fortran_env, only : int32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: chunk_size = 512
   integer, parameter :: value_count = 16
 
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
+
   character(len=256) :: arg0, arg
   integer :: nkeys, repeat_count
-  integer(int32) :: seed
   integer(int32), allocatable :: keys(:), out(:)
   logical :: ok
 
@@ -25,8 +37,8 @@ program main
   if (nkeys <= 0 .or. repeat_count <= 0 .or. modulo(nkeys, chunk_size) /= 0) stop 1
 
   allocate(keys(nkeys), out(nkeys))
-  seed = 512_int32
-  call initialize(keys, seed)
+  call c_srand(512_c_int)
+  call initialize(keys)
   out = keys
 
   call split_sort(out, repeat_count)
@@ -42,33 +54,15 @@ program main
 
 contains
 
-  subroutine initialize(keys, seed)
+  subroutine initialize(keys)
     integer(int32), intent(out) :: keys(:)
-    integer(int32), intent(inout) :: seed
     integer :: i
 
     do i = 1, size(keys)
-      keys(i) = next_rand_mod(seed, value_count)
+      ! Preserve the C++ original's srand(512)/rand() input stream.
+      keys(i) = int(modulo(c_rand(), value_count), int32)
     end do
   end subroutine initialize
-
-  integer function next_rand_mod(seed, divisor)
-    integer(int32), intent(inout) :: seed
-    integer, intent(in) :: divisor
-    integer(int32) :: value
-
-    value = c_rand(seed)
-    next_rand_mod = modulo(value, divisor)
-  end function next_rand_mod
-
-  integer(int32) function c_rand(seed)
-    integer(int32), intent(inout) :: seed
-    integer(int64) :: next_value
-
-    next_value = mod(1103515245_int64 * int(seed, int64) + 12345_int64, 2147483648_int64)
-    seed = int(next_value, int32)
-    c_rand = iand(seed / 65536_int32, 32767_int32)
-  end function c_rand
 
   subroutine split_sort(out, repeat_count)
     integer(int32), intent(inout) :: out(:)

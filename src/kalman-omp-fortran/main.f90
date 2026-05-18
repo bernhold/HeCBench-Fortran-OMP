@@ -1,11 +1,25 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_fortran_env, only : real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
   integer, parameter :: rd = 8
   integer, parameter :: rd2 = rd * rd
   real(real64), parameter :: tolerance = 1.0e-3_real64
+  real(real64), parameter :: c_rand_max = 2147483647.0_real64
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name='rand') result(value)
+      import :: c_int
+      integer(c_int) :: value
+    end function c_rand
+  end interface
 
   character(len=256) :: arg
   integer :: nseries, nobs, fc_steps, repeat
@@ -82,39 +96,31 @@ contains
   subroutine initialize_inputs(nseries, nobs, rqr, tmat, pmat, zvec, alpha, ys, mu)
     integer, intent(in) :: nseries, nobs
     real(real64), intent(out) :: rqr(0:), tmat(0:), pmat(0:), zvec(0:), alpha(0:), ys(0:), mu(0:)
-    integer(int64) :: seed
     integer :: i
 
-    seed = 123_int64
+    call c_srand(123_c_int)
     do i = 0, rd2 * nseries - 1
-      rqr(i) = next_rand(seed)
+      rqr(i) = real(c_rand(), real64) / c_rand_max
     end do
     do i = 0, rd2 * nseries - 1
       tmat(i) = 1.0_real64
     end do
     do i = 0, rd2 * nseries - 1
-      pmat(i) = next_rand(seed)
+      pmat(i) = real(c_rand(), real64) / c_rand_max
     end do
     do i = 0, rd * nseries - 1
-      zvec(i) = next_rand(seed)
+      zvec(i) = real(c_rand(), real64) / c_rand_max
     end do
     do i = 0, rd * nseries - 1
-      alpha(i) = next_rand(seed)
+      alpha(i) = real(c_rand(), real64) / c_rand_max
     end do
     do i = 0, nobs * nseries - 1
-      ys(i) = next_rand(seed)
+      ys(i) = real(c_rand(), real64) / c_rand_max
     end do
     do i = 0, nseries - 1
-      mu(i) = next_rand(seed)
+      mu(i) = real(c_rand(), real64) / c_rand_max
     end do
   end subroutine initialize_inputs
-
-  real(real64) function next_rand(seed) result(value)
-    integer(int64), intent(inout) :: seed
-
-    seed = mod(16807_int64 * seed, 2147483647_int64)
-    value = real(seed, real64) / 2147483647.0_real64
-  end function next_rand
 
   subroutine kalman_device(ys, nobs, tmat, zvec, rqr, pmat, alpha, mu, batch_size, vs, fs, &
       sum_logfs, n_diff, fc_steps, fc, f_fc)

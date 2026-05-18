@@ -1,7 +1,19 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
+
+  interface
+    subroutine c_srand(seed) bind(C, name='srand')
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    integer(c_int) function c_rand() bind(C, name='rand')
+      import :: c_int
+    end function c_rand
+  end interface
 
   integer, parameter :: number_par_per_box = 100
   integer, parameter :: number_threads = 128
@@ -13,7 +25,6 @@ program main
   real(real32), allocatable :: rv_v(:), rv_x(:), rv_y(:), rv_z(:), qv(:)
   real(real32), allocatable :: fv_v(:), fv_x(:), fv_y(:), fv_z(:)
   real(real32), allocatable :: ref_v(:), ref_x(:), ref_y(:), ref_z(:)
-  integer(int64) :: seed
   real(real64) :: start_total, end_total, start_kernel, end_kernel
   logical :: ok
   character(len=256) :: flag
@@ -45,15 +56,15 @@ program main
   allocate(ref_v(space_elem), ref_x(space_elem), ref_y(space_elem), ref_z(space_elem))
 
   call initialize_boxes(boxes1d, number_boxes, box_offset, box_nn, box_nei)
-  seed = 2_int64
+  call c_srand(2_c_int)
   do i = 1, space_elem
-    rv_v(i) = lava_random(seed)
-    rv_x(i) = lava_random(seed)
-    rv_y(i) = lava_random(seed)
-    rv_z(i) = lava_random(seed)
+    rv_v(i) = lava_random()
+    rv_x(i) = lava_random()
+    rv_y(i) = lava_random()
+    rv_z(i) = lava_random()
   end do
   do i = 1, space_elem
-    qv(i) = lava_random(seed)
+    qv(i) = lava_random()
   end do
   fv_v = 0.0_real32
   fv_x = 0.0_real32
@@ -101,10 +112,10 @@ contains
     read(buffer, *) value
   end function read_int_arg
 
-  real(real32) function lava_random(seed) result(value)
-    integer(int64), intent(inout) :: seed
-    seed = mod(seed * 1103515245_int64 + 12345_int64, 2147483648_int64)
-    value = real(mod(seed, 10_int64) + 1_int64, real32) / 10.0_real32
+  real(real32) function lava_random() result(value)
+    integer(c_int) :: sample
+    sample = c_rand()
+    value = real(mod(sample, 10_c_int) + 1_c_int, real32) / 10.0_real32
   end function lava_random
 
   subroutine initialize_boxes(boxes1d, number_boxes, box_offset, box_nn, box_nei)

@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
 
@@ -8,9 +9,22 @@ program main
   integer :: hstride, vstride, o_img_width, o_img_height
   integer :: size_image, size_output, total_input, total_output
   integer :: i
+  integer(c_int) :: c_rand_value
   real(real32), allocatable :: h_image(:), h_output(:), d_output(:)
   real(real64) :: start_time, end_time, avg_time
   logical :: ok
+
+  interface
+    subroutine c_srand(seed) bind(C, name="srand")
+      import :: c_int
+      integer(c_int), value :: seed
+    end subroutine c_srand
+
+    function c_rand() bind(C, name="rand") result(r)
+      import :: c_int
+      integer(c_int) :: r
+    end function c_rand
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 4) then
@@ -46,8 +60,10 @@ program main
 
   allocate(h_image(total_input), h_output(total_output), d_output(total_output))
 
+  call c_srand(2_c_int)
   do i = 1, total_input
-    h_image(i) = real(mod(37 * (i - 1) + 17, 256), real32) / 255.0_real32
+    c_rand_value = c_rand()
+    h_image(i) = real(mod(c_rand_value, 256_c_int), real32) / 255.0_real32
   end do
   h_output = 0.0_real32
   d_output = 0.0_real32

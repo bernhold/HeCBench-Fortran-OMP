@@ -95,7 +95,7 @@ program main
     !$omp target update from(dx_dev(1:total))
     call validate_result(dx_dev, dx_ref, 'dx', 1.0_real32)
     print '(A)', ''
-    print '(A)', '-----------------------------------------------------'
+    print '(A)', '─────────────────────────────────────────────────────'
 
     print '(A)', 'Forward pass benchmarks'
     elapsed = benchmark_forward(repeat, x, weight, bias, out_dev, mean_dev, rstd_dev, bsz, channels, img_size, n_groups)
@@ -242,12 +242,15 @@ contains
     real(real32), intent(in) :: x(:), weight(:), bias(:)
     real(real32), intent(inout) :: out(:), mean(:), rstd(:)
     integer, intent(in) :: bsz, channels, img_size, n_groups
-    integer :: group_size, group_pixels, b, g, i, c, block_idx, base, chan
+    integer :: group_size, group_pixels, team_size, block_size
+    integer :: b, g, i, c, block_idx, base, chan
     real(real32) :: sumv, sum2, m, var, s, val, norm
 
     group_size = channels / n_groups
     group_pixels = img_size * group_size
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) &
+    team_size = bsz * n_groups
+    block_size = max(min(tpb, group_pixels), 32)
+    !$omp target teams distribute collapse(2) num_teams(team_size) &
     !$omp& private(block_idx, base, sumv, sum2, m, var, s, i, c, chan, val, norm)
     do b = 1, bsz
       do g = 1, n_groups
@@ -255,38 +258,45 @@ contains
         base = (block_idx - 1) * group_pixels
         sumv = 0.0_real32
         sum2 = 0.0_real32
+        !$omp parallel do reduction(+:sumv, sum2) num_threads(block_size) private(val)
         do i = 1, group_pixels
           val = x(base + i)
           sumv = sumv + val
           sum2 = sum2 + val * val
         end do
+        !$omp end parallel do
         m = sumv / real(group_pixels, real32)
         var = sum2 / real(group_pixels, real32) - m * m
         s = 1.0_real32 / sqrt(var + eps)
         mean(block_idx) = m
         rstd(block_idx) = s
+        !$omp parallel do num_threads(block_size) private(c, chan, norm)
         do i = 1, group_pixels
           c = (i - 1) / img_size + 1
           chan = (g - 1) * group_size + c
           norm = s * (x(base + i) - m)
           out(base + i) = norm * weight(chan) + bias(chan)
         end do
+        !$omp end parallel do
       end do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine groupnorm_forward_dev
 
   subroutine groupnorm_backward_dev(dout, x, mean, rstd, weight, dx, dweight, dbias, bsz, channels, img_size, n_groups)
     real(real32), intent(in) :: dout(:), x(:), mean(:), rstd(:), weight(:)
     real(real32), intent(inout) :: dx(:), dweight(:), dbias(:)
     integer, intent(in) :: bsz, channels, img_size, n_groups
-    integer :: group_size, group_pixels, b, g, i, c, block_idx, base, chan, pix
+    integer :: group_size, group_pixels, team_size, block_size
+    integer :: b, g, i, c, block_idx, base, chan, pix
     real(real32) :: m, s, wdout_sum, wdout_norm_sum, wdout_block, wdout_norm_block
     real(real32) :: norm, wdout, dw, db
 
     group_size = channels / n_groups
     group_pixels = img_size * group_size
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) &
+    team_size = bsz * n_groups
+    block_size = max(min(tpb, group_pixels), 32 * group_size)
+    !$omp target teams distribute collapse(2) num_teams(team_size) &
     !$omp& private(block_idx, base, m, s, wdout_sum, wdout_norm_sum, wdout_block, wdout_norm_block, i, c, chan, pix, norm, wdout, dw, db)
     do b = 1, bsz
       do g = 1, n_groups
@@ -296,6 +306,7 @@ contains
         s = rstd(block_idx)
         wdout_sum = 0.0_real32
         wdout_norm_sum = 0.0_real32
+        !$omp parallel do reduction(+:wdout_sum, wdout_norm_sum) num_threads(block_size) private(c, chan, norm, wdout)
         do i = 1, group_pixels
           c = (i - 1) / img_size + 1
           chan = (g - 1) * group_size + c
@@ -304,8 +315,10 @@ contains
           wdout_sum = wdout_sum + wdout
           wdout_norm_sum = wdout_norm_sum + wdout * norm
         end do
+        !$omp end parallel do
         wdout_block = wdout_sum / real(group_pixels, real32)
         wdout_norm_block = wdout_norm_sum / real(group_pixels, real32)
+        !$omp parallel do num_threads(block_size) private(c, chan, norm, wdout)
         do i = 1, group_pixels
           c = (i - 1) / img_size + 1
           chan = (g - 1) * group_size + c
@@ -313,16 +326,19 @@ contains
           wdout = weight(chan) * dout(base + i)
           dx(base + i) = (wdout - wdout_block - norm * wdout_norm_block) * s
         end do
+        !$omp end parallel do
         do c = 1, group_size
           chan = (g - 1) * group_size + c
           dw = 0.0_real32
           db = 0.0_real32
+          !$omp parallel do reduction(+:dw, db) num_threads(block_size) private(i, norm)
           do pix = 1, img_size
             i = (c - 1) * img_size + pix
             norm = (x(base + i) - m) * s
             db = db + dout(base + i)
             dw = dw + dout(base + i) * norm
           end do
+          !$omp end parallel do
           !$omp atomic update
           dweight(chan) = dweight(chan) + dw
           !$omp atomic update
@@ -330,7 +346,7 @@ contains
         end do
       end do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine groupnorm_backward_dev
 
   real(real64) function benchmark_forward(repeat, x, weight, bias, out, mean, rstd, bsz, channels, img_size, n_groups)

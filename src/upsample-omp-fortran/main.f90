@@ -1,6 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int, c_int64_t
   use omp_lib
   implicit none
 
@@ -10,15 +10,15 @@ program main
       integer(c_int), value :: seed
     end subroutine c_srand
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine c_fill_random_float(a, n) bind(C, name='fill_random_float')
+      import :: c_float, c_int64_t
+      real(c_float), intent(out) :: a(*)
+      integer(c_int64_t), value :: n
+    end subroutine c_fill_random_float
   end interface
 
   integer, parameter :: block_sizes(6) = [32, 64, 128, 256, 512, 1024]
   integer, parameter :: block2d_sizes(3) = [8, 16, 32]
-  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer :: bsz, channels, height, width, repeat, i, block_size
   integer(int64) :: input_size, output_size
   real(real32), allocatable :: x(:), dout(:), out_ref(:), out_dev(:), dx_ref(:), dx_dev(:)
@@ -33,7 +33,6 @@ program main
   height = read_arg(3)
   width = read_arg(4)
   repeat = read_arg(5)
-  if (bsz <= 0 .or. channels <= 0 .or. height <= 0 .or. width <= 0 .or. repeat <= 0) error stop 'invalid arguments'
 
   input_size = int(bsz, int64) * channels * height * width
   output_size = input_size * 4_int64
@@ -65,15 +64,15 @@ program main
       block_size = block_sizes(i)
       elapsed_ms = benchmark_forward(repeat, x, out_dev, bsz, channels, height, width, block_size)
       gflops = real(input_size, real64) / elapsed_ms * 1.0e3_real64 / 1.0e9_real64
-      write(*, '(A,I4,A,F0.4,A,F0.2)') 'block_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
+      write(*, '(A,I4,A,F6.4,A,F4.2)') 'block_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
     end do
 
     print '(A)', ''
-    print '(A)', '-----------------------------------------------------'
+    print '(A)', '─────────────────────────────────────────────────────'
     do i = 1, size(block2d_sizes)
       block_size = block2d_sizes(i)
       write(*, '(A,I0)') 'Checking block size ', block_size
-      call upsample_forward_dev(x, out_dev, bsz, channels, height, width, block_size * block_size)
+      call upsample_forward_dev2(x, out_dev, bsz, channels, height, width, block_size, block_size)
       !$omp target update from(out_dev(1:output_size))
       call validate_result(out_dev, out_ref, 'out')
     end do
@@ -82,13 +81,13 @@ program main
     print '(A)', 'Forward2 pass benchmarks:'
     do i = 1, size(block2d_sizes)
       block_size = block2d_sizes(i)
-      elapsed_ms = benchmark_forward(repeat, x, out_dev, bsz, channels, height, width, block_size * block_size)
+      elapsed_ms = benchmark_forward2(repeat, x, out_dev, bsz, channels, height, width, block_size, block_size)
       gflops = real(input_size, real64) / elapsed_ms * 1.0e3_real64 / 1.0e9_real64
-      write(*, '(A,I4,A,F0.4,A,F0.2)') 'block2D_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
+      write(*, '(A,I4,A,F6.4,A,F4.2)') 'block2D_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
     end do
 
     print '(A)', ''
-    print '(A)', '-----------------------------------------------------'
+    print '(A)', '─────────────────────────────────────────────────────'
     print '(A)', 'Checking backward pass'
     do i = 1, size(block_sizes)
       block_size = block_sizes(i)
@@ -108,16 +107,16 @@ program main
       block_size = block_sizes(i)
       elapsed_ms = benchmark_backward(repeat, dout, dx_dev, bsz, channels, height, width, block_size)
       gflops = real(input_size, real64) / elapsed_ms * 1.0e3_real64 / 1.0e9_real64
-      write(*, '(A,I4,A,F0.4,A,F0.2)') 'block_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
+      write(*, '(A,I4,A,F6.4,A,F4.2)') 'block_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
     end do
 
     print '(A)', ''
-    print '(A)', '-----------------------------------------------------'
+    print '(A)', '─────────────────────────────────────────────────────'
     print '(A)', 'Checking backward2 pass'
     do i = 1, size(block2d_sizes)
       block_size = block2d_sizes(i)
       write(*, '(A,I0)') 'Checking block size ', block_size
-      call upsample_backward_dev(dout, dx_dev, bsz, channels, height, width, block_size * block_size)
+      call upsample_backward_dev2(dout, dx_dev, bsz, channels, height, width, block_size, block_size)
       !$omp target update from(dx_dev(1:input_size))
       call validate_result(dx_dev, dx_ref, 'dx')
     end do
@@ -130,9 +129,9 @@ program main
     print '(A)', 'Backward2 pass benchmarks:'
     do i = 1, size(block2d_sizes)
       block_size = block2d_sizes(i)
-      elapsed_ms = benchmark_backward(repeat, dout, dx_dev, bsz, channels, height, width, block_size * block_size)
+      elapsed_ms = benchmark_backward2(repeat, dout, dx_dev, bsz, channels, height, width, block_size, block_size)
       gflops = real(input_size, real64) / elapsed_ms * 1.0e3_real64 / 1.0e9_real64
-      write(*, '(A,I4,A,F0.4,A,F0.2)') 'block2D_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
+      write(*, '(A,I4,A,F6.4,A,F4.2)') 'block2D_size ', block_size, ' | time ', elapsed_ms, ' ms | gflops ', gflops
     end do
   !$omp end target data
 
@@ -149,10 +148,7 @@ contains
 
   subroutine fill_random(a)
     real(real32), intent(out) :: a(:)
-    integer(int64) :: idx
-    do idx = 1, int(size(a), int64)
-      a(idx) = real(c_rand(), real32) / real(c_rand_max, real32) * 2.0_real32 - 1.0_real32
-    end do
+    call c_fill_random_float(a, int(size(a), c_int64_t))
   end subroutine fill_random
 
   subroutine validate_result(actual, expected, name)
@@ -262,6 +258,55 @@ contains
     !$omp end target teams distribute parallel do
   end subroutine upsample_backward_dev
 
+  subroutine upsample_forward_dev2(x, out, bsz, channels, height, width, block_size_x, block_size_y)
+    real(real32), intent(in) :: x(:)
+    real(real32), intent(inout) :: out(:)
+    integer, intent(in) :: bsz, channels, height, width, block_size_x, block_size_y
+    integer :: bc, in_y, in_x, b, c, in_idx, out_base, h_out, w_out, block_size
+    h_out = height * 2
+    w_out = width * 2
+    block_size = block_size_x * block_size_y
+    !$omp target teams distribute parallel do collapse(3) thread_limit(block_size) private(b, c, in_idx, out_base)
+    do bc = 0, bsz * channels - 1
+      do in_y = 0, height - 1
+        do in_x = 0, width - 1
+          b = bc / channels
+          c = mod(bc, channels)
+          in_idx = ((b * channels + c) * height + in_y) * width + in_x + 1
+          out_base = ((b * channels + c) * h_out + 2 * in_y) * w_out + 2 * in_x + 1
+          out(out_base) = x(in_idx)
+          out(out_base + 1) = x(in_idx)
+          out(out_base + w_out) = x(in_idx)
+          out(out_base + w_out + 1) = x(in_idx)
+        end do
+      end do
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine upsample_forward_dev2
+
+  subroutine upsample_backward_dev2(dout, dx, bsz, channels, height, width, block_size_x, block_size_y)
+    real(real32), intent(in) :: dout(:)
+    real(real32), intent(inout) :: dx(:)
+    integer, intent(in) :: bsz, channels, height, width, block_size_x, block_size_y
+    integer :: bc, in_y, in_x, b, c, in_idx, out_base, h_out, w_out, block_size
+    h_out = height * 2
+    w_out = width * 2
+    block_size = block_size_x * block_size_y
+    !$omp target teams distribute parallel do collapse(3) thread_limit(block_size) private(b, c, in_idx, out_base)
+    do bc = 0, bsz * channels - 1
+      do in_y = 0, height - 1
+        do in_x = 0, width - 1
+          b = bc / channels
+          c = mod(bc, channels)
+          in_idx = ((b * channels + c) * height + in_y) * width + in_x + 1
+          out_base = ((b * channels + c) * h_out + 2 * in_y) * w_out + 2 * in_x + 1
+          dx(in_idx) = dout(out_base) + dout(out_base + 1) + dout(out_base + w_out) + dout(out_base + w_out + 1)
+        end do
+      end do
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine upsample_backward_dev2
+
   real(real64) function benchmark_forward(repeat, x, out, bsz, channels, height, width, block_size)
     integer, intent(in) :: repeat, bsz, channels, height, width, block_size
     real(real32), intent(in) :: x(:)
@@ -276,6 +321,20 @@ contains
     benchmark_forward = ((end_time - start_time) * 1.0e3_real64) / real(repeat, real64)
   end function benchmark_forward
 
+  real(real64) function benchmark_forward2(repeat, x, out, bsz, channels, height, width, block_size_x, block_size_y)
+    integer, intent(in) :: repeat, bsz, channels, height, width, block_size_x, block_size_y
+    real(real32), intent(in) :: x(:)
+    real(real32), intent(inout) :: out(:)
+    integer :: iter
+    real(real64) :: start_time, end_time
+    start_time = omp_get_wtime()
+    do iter = 1, repeat
+      call upsample_forward_dev2(x, out, bsz, channels, height, width, block_size_x, block_size_y)
+    end do
+    end_time = omp_get_wtime()
+    benchmark_forward2 = ((end_time - start_time) * 1.0e3_real64) / real(repeat, real64)
+  end function benchmark_forward2
+
   real(real64) function benchmark_backward(repeat, dout, dx, bsz, channels, height, width, block_size)
     integer, intent(in) :: repeat, bsz, channels, height, width, block_size
     real(real32), intent(in) :: dout(:)
@@ -289,5 +348,19 @@ contains
     end_time = omp_get_wtime()
     benchmark_backward = ((end_time - start_time) * 1.0e3_real64) / real(repeat, real64)
   end function benchmark_backward
+
+  real(real64) function benchmark_backward2(repeat, dout, dx, bsz, channels, height, width, block_size_x, block_size_y)
+    integer, intent(in) :: repeat, bsz, channels, height, width, block_size_x, block_size_y
+    real(real32), intent(in) :: dout(:)
+    real(real32), intent(inout) :: dx(:)
+    integer :: iter
+    real(real64) :: start_time, end_time
+    start_time = omp_get_wtime()
+    do iter = 1, repeat
+      call upsample_backward_dev2(dout, dx, bsz, channels, height, width, block_size_x, block_size_y)
+    end do
+    end_time = omp_get_wtime()
+    benchmark_backward2 = ((end_time - start_time) * 1.0e3_real64) / real(repeat, real64)
+  end function benchmark_backward2
 
 end program main

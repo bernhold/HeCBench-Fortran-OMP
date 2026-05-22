@@ -1,5 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real64
+  use, intrinsic :: iso_c_binding, only : c_char, c_double, c_long, c_null_char
   use omp_lib
   implicit none
 
@@ -8,6 +9,20 @@ program main
   real(real64) :: kernel_mem_used, kernel_starttime, kernel_endtime, kernel_runtime
   real(real64), allocatable :: m_gate(:), m_gate_h(:), vm(:)
   logical :: ok
+
+  interface
+    function c_atol(str) bind(C, name='atol') result(value)
+      import :: c_char, c_long
+      character(kind=c_char), intent(in) :: str(*)
+      integer(c_long) :: value
+    end function c_atol
+
+    function c_atof(str) bind(C, name='atof') result(value)
+      import :: c_char, c_double
+      character(kind=c_char), intent(in) :: str(*)
+      real(c_double) :: value
+    end function c_atof
+  end interface
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 2) then
@@ -18,13 +33,11 @@ program main
 
   call get_command_argument(1, arg1)
   call get_command_argument(2, arg2)
-  read(arg1, *) iterations
-  read(arg2, *) kernel_mem_used
-  if (iterations <= 0_int64 .or. kernel_mem_used <= 0.0_real64) stop 1
+  iterations = int(c_atol(trim(arg1) // c_null_char), int64)
+  kernel_mem_used = real(c_atof(trim(arg2) // c_null_char), real64)
 
   n_cells = int((kernel_mem_used * 1024.0_real64 * 1024.0_real64 * 1024.0_real64) / &
       (2.0_real64 * storage_size(0.0_real64) / 8.0_real64), int64)
-  if (n_cells <= 0_int64) stop 1
 
   print '(A,I0)', 'Number of cells: ', n_cells
 
@@ -61,7 +74,6 @@ program main
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
   deallocate(m_gate, m_gate_h, vm)

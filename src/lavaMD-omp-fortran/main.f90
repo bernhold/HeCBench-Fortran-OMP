@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int, c_long
   use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
@@ -20,16 +20,37 @@ program main
   real(real32), parameter :: alpha = 0.5_real32
   real(real32), parameter :: tolerance = 2.0e-3_real32
 
+  type, bind(C) :: three_vector
+    real(c_float) :: x, y, z
+  end type three_vector
+
+  type, bind(C) :: four_vector
+    real(c_float) :: v, x, y, z
+  end type four_vector
+
+  type, bind(C) :: nei_str
+    integer(c_int) :: x, y, z
+    integer(c_int) :: number
+    integer(c_long) :: offset
+  end type nei_str
+
+  type, bind(C) :: box_str
+    integer(c_int) :: x, y, z
+    integer(c_int) :: number
+    integer(c_long) :: offset
+    integer(c_int) :: nn
+    type(nei_str) :: nei(26)
+  end type box_str
+
   integer :: boxes1d, number_boxes, space_elem, i
-  integer, allocatable :: box_offset(:), box_nn(:), box_nei(:,:)
-  real(real32), allocatable :: rv_v(:), rv_x(:), rv_y(:), rv_z(:), qv(:)
-  real(real32), allocatable :: fv_v(:), fv_x(:), fv_y(:), fv_z(:)
-  real(real32), allocatable :: ref_v(:), ref_x(:), ref_y(:), ref_z(:)
+  type(box_str), allocatable :: box_cpu(:)
+  type(four_vector), allocatable :: rv_cpu(:), fv_cpu(:), ref_cpu(:)
+  real(real32), allocatable :: qv_cpu(:)
   real(real64) :: start_total, end_total, start_kernel, end_kernel
   logical :: ok
   character(len=256) :: flag
 
-  write(*,'(A,I0,1X)') 'WG size of kernel = ', number_threads
+  write(*,'(A,I0,A)') 'WG size of kernel = ', number_threads, ' '
 
   if (command_argument_count() /= 2) then
     write(*,'(A)', advance='no') 'Provide boxes1d argument, example: -boxes1d 16'
@@ -50,58 +71,48 @@ program main
 
   number_boxes = boxes1d * boxes1d * boxes1d
   space_elem = number_boxes * number_par_per_box
-  allocate(box_offset(number_boxes), box_nn(number_boxes), box_nei(26, number_boxes))
-  allocate(rv_v(space_elem), rv_x(space_elem), rv_y(space_elem), rv_z(space_elem), qv(space_elem))
-  allocate(fv_v(space_elem), fv_x(space_elem), fv_y(space_elem), fv_z(space_elem))
-  allocate(ref_v(space_elem), ref_x(space_elem), ref_y(space_elem), ref_z(space_elem))
+  allocate(box_cpu(number_boxes))
+  allocate(rv_cpu(space_elem), fv_cpu(space_elem), ref_cpu(space_elem))
+  allocate(qv_cpu(space_elem))
 
-  call initialize_boxes(boxes1d, number_boxes, box_offset, box_nn, box_nei)
+  call initialize_boxes(boxes1d, number_boxes, box_cpu)
   call c_srand(2_c_int)
   do i = 1, space_elem
-    rv_v(i) = lava_random()
-    rv_x(i) = lava_random()
-    rv_y(i) = lava_random()
-    rv_z(i) = lava_random()
+    rv_cpu(i)%v = lava_random()
+    rv_cpu(i)%x = lava_random()
+    rv_cpu(i)%y = lava_random()
+    rv_cpu(i)%z = lava_random()
   end do
   do i = 1, space_elem
-    qv(i) = lava_random()
+    qv_cpu(i) = lava_random()
   end do
-  fv_v = 0.0_real32
-  fv_x = 0.0_real32
-  fv_y = 0.0_real32
-  fv_z = 0.0_real32
-  ref_v = 0.0_real32
-  ref_x = 0.0_real32
-  ref_y = 0.0_real32
-  ref_z = 0.0_real32
+  fv_cpu%v = 0.0_real32
+  fv_cpu%x = 0.0_real32
+  fv_cpu%y = 0.0_real32
+  fv_cpu%z = 0.0_real32
+  ref_cpu%v = 0.0_real32
+  ref_cpu%x = 0.0_real32
+  ref_cpu%y = 0.0_real32
+  ref_cpu%z = 0.0_real32
 
   start_total = omp_get_wtime()
-  !$omp target data map(to: box_offset(1:number_boxes), box_nn(1:number_boxes), box_nei(1:26,1:number_boxes), &
-  !$omp& rv_v(1:space_elem), rv_x(1:space_elem), rv_y(1:space_elem), rv_z(1:space_elem), qv(1:space_elem)) &
-  !$omp& map(tofrom: fv_v(1:space_elem), fv_x(1:space_elem), fv_y(1:space_elem), fv_z(1:space_elem))
+  !$omp target data map(to: box_cpu(1:number_boxes), rv_cpu(1:space_elem), qv_cpu(1:space_elem)) &
+  !$omp& map(tofrom: fv_cpu(1:space_elem))
   start_kernel = omp_get_wtime()
-  call compute_forces_device(number_boxes, box_offset, box_nn, box_nei, rv_v, rv_x, rv_y, rv_z, qv, &
-      fv_v, fv_x, fv_y, fv_z)
+  call compute_forces_device(number_boxes, box_cpu, rv_cpu, qv_cpu, fv_cpu)
   end_kernel = omp_get_wtime()
   !$omp end target data
   end_total = omp_get_wtime()
 
-  call compute_forces_host(number_boxes, box_offset, box_nn, box_nei, rv_v, rv_x, rv_y, rv_z, qv, &
-      ref_v, ref_x, ref_y, ref_z)
-  ok = compare_forces(space_elem, fv_v, fv_x, fv_y, fv_z, ref_v, ref_x, ref_y, ref_z)
+  call compute_forces_host(number_boxes, box_cpu, rv_cpu, qv_cpu, ref_cpu)
+  ok = compare_forces(space_elem, fv_cpu, ref_cpu)
 
   write(*,'(A)') 'Device offloading time:'
-  write(*,'(F0.12,A)') real(end_total - start_total, real32), ' s'
+  call print_seconds(real(end_total - start_total, real32))
   write(*,'(A)') 'Kernel execution time:'
-  write(*,'(F0.12,A)') real(end_kernel - start_kernel, real32), ' s'
-  if (ok) then
-    write(*,'(A)') 'PASS'
-  else
-    write(*,'(A)') 'FAIL'
-  end if
+  call print_seconds(real(end_kernel - start_kernel, real32))
 
-  deallocate(box_offset, box_nn, box_nei, rv_v, rv_x, rv_y, rv_z, qv, fv_v, fv_x, fv_y, fv_z)
-  deallocate(ref_v, ref_x, ref_y, ref_z)
+  deallocate(box_cpu, rv_cpu, qv_cpu, fv_cpu, ref_cpu)
 
 contains
 
@@ -118,27 +129,56 @@ contains
     value = real(mod(sample, 10_c_int) + 1_c_int, real32) / 10.0_real32
   end function lava_random
 
-  subroutine initialize_boxes(boxes1d, number_boxes, box_offset, box_nn, box_nei)
+  subroutine print_seconds(value)
+    real(real32), intent(in) :: value
+    character(len=32) :: buffer
+    write(buffer, '(F20.12)') value
+    buffer = adjustl(buffer)
+    if (buffer(1:1) == '.') then
+      write(*,'(A,A,A)') '0', trim(buffer), ' s'
+    else
+      write(*,'(A,A)') trim(buffer), ' s'
+    end if
+  end subroutine print_seconds
+
+  subroutine initialize_boxes(boxes1d, number_boxes, box_cpu)
     integer, intent(in) :: boxes1d, number_boxes
-    integer, intent(out) :: box_offset(:), box_nn(:), box_nei(:,:)
-    integer :: i, j, k, l, m, n, nh, neighbor
-    box_nei = 0
+    type(box_str), intent(out) :: box_cpu(:)
+    integer :: i, j, k, l, m, n, nh, neighbor, nn
+    do nh = 1, number_boxes
+      do nn = 1, 26
+        box_cpu(nh)%nei(nn)%x = 0_c_int
+        box_cpu(nh)%nei(nn)%y = 0_c_int
+        box_cpu(nh)%nei(nn)%z = 0_c_int
+        box_cpu(nh)%nei(nn)%number = 0_c_int
+        box_cpu(nh)%nei(nn)%offset = 0_c_long
+      end do
+    end do
     nh = 0
     do i = 0, boxes1d - 1
       do j = 0, boxes1d - 1
         do k = 0, boxes1d - 1
           nh = nh + 1
-          box_offset(nh) = (nh - 1) * number_par_per_box + 1
-          box_nn(nh) = 0
+          box_cpu(nh)%x = k
+          box_cpu(nh)%y = j
+          box_cpu(nh)%z = i
+          box_cpu(nh)%number = nh - 1
+          box_cpu(nh)%offset = int(nh - 1, c_long) * int(number_par_per_box, c_long)
+          box_cpu(nh)%nn = 0
           do l = -1, 1
             do m = -1, 1
               do n = -1, 1
                 if ((i + l) >= 0 .and. (j + m) >= 0 .and. (k + n) >= 0 .and. &
                     (i + l) < boxes1d .and. (j + m) < boxes1d .and. (k + n) < boxes1d .and. &
                     .not. (l == 0 .and. m == 0 .and. n == 0)) then
-                  box_nn(nh) = box_nn(nh) + 1
-                  neighbor = ((i + l) * boxes1d * boxes1d) + ((j + m) * boxes1d) + (k + n) + 1
-                  box_nei(box_nn(nh), nh) = neighbor
+                  nn = box_cpu(nh)%nn + 1
+                  neighbor = ((i + l) * boxes1d * boxes1d) + ((j + m) * boxes1d) + (k + n)
+                  box_cpu(nh)%nei(nn)%x = k + n
+                  box_cpu(nh)%nei(nn)%y = j + m
+                  box_cpu(nh)%nei(nn)%z = i + l
+                  box_cpu(nh)%nei(nn)%number = neighbor
+                  box_cpu(nh)%nei(nn)%offset = int(neighbor, c_long) * int(number_par_per_box, c_long)
+                  box_cpu(nh)%nn = nn
                 end if
               end do
             end do
@@ -148,97 +188,142 @@ contains
     end do
   end subroutine initialize_boxes
 
-  subroutine compute_forces_device(number_boxes, box_offset, box_nn, box_nei, rv_v, rv_x, rv_y, rv_z, qv, &
-      fv_v, fv_x, fv_y, fv_z)
-    integer, intent(in) :: number_boxes, box_offset(:), box_nn(:), box_nei(:,:)
-    real(real32), intent(in) :: rv_v(:), rv_x(:), rv_y(:), rv_z(:), qv(:)
-    real(real32), intent(inout) :: fv_v(:), fv_x(:), fv_y(:), fv_z(:)
-    integer :: bx, pi, k, j, first_i, first_j, pointer, home_idx, nei_idx
+  subroutine compute_forces_device(number_boxes, box_cpu, rv_cpu, qv_cpu, fv_cpu)
+    integer, intent(in) :: number_boxes
+    type(box_str), intent(in) :: box_cpu(:)
+    type(four_vector), intent(in) :: rv_cpu(:)
+    real(real32), intent(in) :: qv_cpu(:)
+    type(four_vector), intent(inout) :: fv_cpu(:)
+    integer :: bx, tx, wtx, k, j, first_i, first_j, pointer, home_idx
     real(real32) :: a2, r2, u2, vij, fs, dx, dy, dz
+    real(real32) :: rA_shared_v(number_par_per_box), rA_shared_x(number_par_per_box)
+    real(real32) :: rA_shared_y(number_par_per_box), rA_shared_z(number_par_per_box)
+    real(real32) :: rB_shared_v(number_par_per_box), rB_shared_x(number_par_per_box)
+    real(real32) :: rB_shared_y(number_par_per_box), rB_shared_z(number_par_per_box)
+    real(real32) :: qB_shared(number_par_per_box)
 
+    !$omp target teams num_teams(number_boxes) thread_limit(number_threads) &
+    !$omp& private(rA_shared_v, rA_shared_x, rA_shared_y, rA_shared_z, rB_shared_v, rB_shared_x, &
+    !$omp& rB_shared_y, rB_shared_z, qB_shared, a2)
     a2 = 2.0_real32 * alpha * alpha
-    !$omp target teams distribute parallel do collapse(2) thread_limit(number_threads) &
-    !$omp& private(first_i, first_j, pointer, home_idx, nei_idx, k, j, r2, u2, vij, fs, dx, dy, dz)
-    do bx = 1, number_boxes
-      do pi = 1, number_par_per_box
-        first_i = box_offset(bx)
-        home_idx = first_i + pi - 1
-        do k = 0, box_nn(bx)
-          if (k == 0) then
-            pointer = bx
-          else
-            pointer = box_nei(k, bx)
-          end if
-          first_j = box_offset(pointer)
+    !$omp parallel private(bx, tx, wtx, k, j, first_i, first_j, pointer, home_idx, r2, u2, vij, fs, dx, dy, dz)
+    bx = omp_get_team_num() + 1
+    tx = omp_get_thread_num()
+    wtx = tx
+    if (bx <= number_boxes) then
+      first_i = int(box_cpu(bx)%offset)
+
+      do while (wtx < number_par_per_box)
+        home_idx = first_i + wtx + 1
+        rA_shared_v(wtx + 1) = rv_cpu(home_idx)%v
+        rA_shared_x(wtx + 1) = rv_cpu(home_idx)%x
+        rA_shared_y(wtx + 1) = rv_cpu(home_idx)%y
+        rA_shared_z(wtx + 1) = rv_cpu(home_idx)%z
+        wtx = wtx + number_threads
+      end do
+      wtx = tx
+      !$omp barrier
+
+      do k = 0, box_cpu(bx)%nn
+        if (k == 0) then
+          pointer = bx
+        else
+          pointer = box_cpu(bx)%nei(k)%number + 1
+        end if
+        first_j = int(box_cpu(pointer)%offset)
+
+        do while (wtx < number_par_per_box)
+          j = first_j + wtx + 1
+          rB_shared_v(wtx + 1) = rv_cpu(j)%v
+          rB_shared_x(wtx + 1) = rv_cpu(j)%x
+          rB_shared_y(wtx + 1) = rv_cpu(j)%y
+          rB_shared_z(wtx + 1) = rv_cpu(j)%z
+          qB_shared(wtx + 1) = qv_cpu(j)
+          wtx = wtx + number_threads
+        end do
+        wtx = tx
+        !$omp barrier
+
+        do while (wtx < number_par_per_box)
+          home_idx = first_i + wtx + 1
           do j = 1, number_par_per_box
-            nei_idx = first_j + j - 1
-            r2 = rv_v(home_idx) + rv_v(nei_idx) - &
-                (rv_x(home_idx) * rv_x(nei_idx) + rv_y(home_idx) * rv_y(nei_idx) + rv_z(home_idx) * rv_z(nei_idx))
+            r2 = rA_shared_v(wtx + 1) + rB_shared_v(j) - &
+                (rA_shared_x(wtx + 1) * rB_shared_x(j) + &
+                 rA_shared_y(wtx + 1) * rB_shared_y(j) + &
+                 rA_shared_z(wtx + 1) * rB_shared_z(j))
             u2 = a2 * r2
             vij = exp(-u2)
             fs = 2.0_real32 * vij
-            dx = rv_x(home_idx) - rv_x(nei_idx)
-            dy = rv_y(home_idx) - rv_y(nei_idx)
-            dz = rv_z(home_idx) - rv_z(nei_idx)
-            fv_v(home_idx) = fv_v(home_idx) + qv(nei_idx) * vij
-            fv_x(home_idx) = fv_x(home_idx) + qv(nei_idx) * fs * dx
-            fv_y(home_idx) = fv_y(home_idx) + qv(nei_idx) * fs * dy
-            fv_z(home_idx) = fv_z(home_idx) + qv(nei_idx) * fs * dz
+            dx = rA_shared_x(wtx + 1) - rB_shared_x(j)
+            dy = rA_shared_y(wtx + 1) - rB_shared_y(j)
+            dz = rA_shared_z(wtx + 1) - rB_shared_z(j)
+            fv_cpu(home_idx)%v = fv_cpu(home_idx)%v + qB_shared(j) * vij
+            fv_cpu(home_idx)%x = fv_cpu(home_idx)%x + qB_shared(j) * fs * dx
+            fv_cpu(home_idx)%y = fv_cpu(home_idx)%y + qB_shared(j) * fs * dy
+            fv_cpu(home_idx)%z = fv_cpu(home_idx)%z + qB_shared(j) * fs * dz
           end do
+          wtx = wtx + number_threads
         end do
+        wtx = tx
+        !$omp barrier
       end do
-    end do
-    !$omp end target teams distribute parallel do
+    end if
+    !$omp end parallel
+    !$omp end target teams
   end subroutine compute_forces_device
 
-  subroutine compute_forces_host(number_boxes, box_offset, box_nn, box_nei, rv_v, rv_x, rv_y, rv_z, qv, &
-      fv_v, fv_x, fv_y, fv_z)
-    integer, intent(in) :: number_boxes, box_offset(:), box_nn(:), box_nei(:,:)
-    real(real32), intent(in) :: rv_v(:), rv_x(:), rv_y(:), rv_z(:), qv(:)
-    real(real32), intent(inout) :: fv_v(:), fv_x(:), fv_y(:), fv_z(:)
+  subroutine compute_forces_host(number_boxes, box_cpu, rv_cpu, qv_cpu, fv_cpu)
+    integer, intent(in) :: number_boxes
+    type(box_str), intent(in) :: box_cpu(:)
+    type(four_vector), intent(in) :: rv_cpu(:)
+    real(real32), intent(in) :: qv_cpu(:)
+    type(four_vector), intent(inout) :: fv_cpu(:)
     integer :: bx, pi, k, j, first_i, first_j, pointer, home_idx, nei_idx
     real(real32) :: a2, r2, u2, vij, fs, dx, dy, dz
 
     a2 = 2.0_real32 * alpha * alpha
     do bx = 1, number_boxes
-      first_i = box_offset(bx)
+      first_i = int(box_cpu(bx)%offset)
       do pi = 1, number_par_per_box
-        home_idx = first_i + pi - 1
-        do k = 0, box_nn(bx)
+        home_idx = first_i + pi
+        do k = 0, box_cpu(bx)%nn
           if (k == 0) then
             pointer = bx
           else
-            pointer = box_nei(k, bx)
+            pointer = box_cpu(bx)%nei(k)%number + 1
           end if
-          first_j = box_offset(pointer)
+          first_j = int(box_cpu(pointer)%offset)
           do j = 1, number_par_per_box
-            nei_idx = first_j + j - 1
-            r2 = rv_v(home_idx) + rv_v(nei_idx) - &
-                (rv_x(home_idx) * rv_x(nei_idx) + rv_y(home_idx) * rv_y(nei_idx) + rv_z(home_idx) * rv_z(nei_idx))
+            nei_idx = first_j + j
+            r2 = rv_cpu(home_idx)%v + rv_cpu(nei_idx)%v - &
+                (rv_cpu(home_idx)%x * rv_cpu(nei_idx)%x + rv_cpu(home_idx)%y * rv_cpu(nei_idx)%y + &
+                 rv_cpu(home_idx)%z * rv_cpu(nei_idx)%z)
             u2 = a2 * r2
             vij = exp(-u2)
             fs = 2.0_real32 * vij
-            dx = rv_x(home_idx) - rv_x(nei_idx)
-            dy = rv_y(home_idx) - rv_y(nei_idx)
-            dz = rv_z(home_idx) - rv_z(nei_idx)
-            fv_v(home_idx) = fv_v(home_idx) + qv(nei_idx) * vij
-            fv_x(home_idx) = fv_x(home_idx) + qv(nei_idx) * fs * dx
-            fv_y(home_idx) = fv_y(home_idx) + qv(nei_idx) * fs * dy
-            fv_z(home_idx) = fv_z(home_idx) + qv(nei_idx) * fs * dz
+            dx = rv_cpu(home_idx)%x - rv_cpu(nei_idx)%x
+            dy = rv_cpu(home_idx)%y - rv_cpu(nei_idx)%y
+            dz = rv_cpu(home_idx)%z - rv_cpu(nei_idx)%z
+            fv_cpu(home_idx)%v = fv_cpu(home_idx)%v + qv_cpu(nei_idx) * vij
+            fv_cpu(home_idx)%x = fv_cpu(home_idx)%x + qv_cpu(nei_idx) * fs * dx
+            fv_cpu(home_idx)%y = fv_cpu(home_idx)%y + qv_cpu(nei_idx) * fs * dy
+            fv_cpu(home_idx)%z = fv_cpu(home_idx)%z + qv_cpu(nei_idx) * fs * dz
           end do
         end do
       end do
     end do
   end subroutine compute_forces_host
 
-  logical function compare_forces(n, fv_v, fv_x, fv_y, fv_z, ref_v, ref_x, ref_y, ref_z) result(ok)
+  logical function compare_forces(n, fv_cpu, ref_cpu) result(ok)
     integer, intent(in) :: n
-    real(real32), intent(in) :: fv_v(:), fv_x(:), fv_y(:), fv_z(:), ref_v(:), ref_x(:), ref_y(:), ref_z(:)
+    type(four_vector), intent(in) :: fv_cpu(:), ref_cpu(:)
     integer :: i
     ok = .true.
     do i = 1, n
-      if (abs(fv_v(i) - ref_v(i)) > tolerance .or. abs(fv_x(i) - ref_x(i)) > tolerance .or. &
-          abs(fv_y(i) - ref_y(i)) > tolerance .or. abs(fv_z(i) - ref_z(i)) > tolerance) then
+      if (abs(fv_cpu(i)%v - ref_cpu(i)%v) > tolerance .or. &
+          abs(fv_cpu(i)%x - ref_cpu(i)%x) > tolerance .or. &
+          abs(fv_cpu(i)%y - ref_cpu(i)%y) > tolerance .or. &
+          abs(fv_cpu(i)%z - ref_cpu(i)%z) > tolerance) then
         ok = .false.
         return
       end if

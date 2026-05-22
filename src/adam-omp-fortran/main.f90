@@ -43,7 +43,6 @@ program main
   read(arg1, *) vector_size
   read(arg2, *) time_step
   read(arg3, *) repeat
-  if (vector_size <= 0 .or. time_step <= 0 .or. repeat <= 0) stop 1
 
   allocate(m(vector_size), v(vector_size), g(vector_size), p(vector_size), r(vector_size))
   allocate(m_ref(vector_size), v_ref(vector_size))
@@ -53,7 +52,7 @@ program main
   m_ref = m
   v_ref = v
 
-  !$omp target data map(to: g(1:vector_size)) map(tofrom: p(1:vector_size), m(1:vector_size), v(1:vector_size))
+  !$omp target data map(to: m(1:vector_size), v(1:vector_size), g(1:vector_size)) map(tofrom: p(1:vector_size))
   start_time = omp_get_wtime()
   do i = 1, repeat
     call adam_kernel(p, m, v, g, beta1, beta2, eps, grad_scale, step_size, time_step, vector_size, decay)

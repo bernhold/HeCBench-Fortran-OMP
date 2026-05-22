@@ -26,6 +26,7 @@ program main
   integer, allocatable :: tisspoints(:)
   real(real32), allocatable :: gtt(:), gbartt(:), ct(:), ctprev(:), qt(:), ct_gold(:)
   real(real64) :: start_time, elapsed
+  character(len=32) :: time_text
   logical :: ok
 
   call get_command_argument(0, arg0)
@@ -65,11 +66,11 @@ program main
   !$omp target data map(to: tisspoints(1:3*nnt_dev), gtt(1:nsp*nnt_dev), gbartt(1:nsp*nnt_dev), &
   !$omp& ctprev(1:nnt_dev), qt(1:nnt_dev)) map(tofrom: ct(1:nnt_dev))
   do i = 1, 2
-    call tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, isp)
+    call tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, step, isp)
   end do
 
   do i = 1, 2
-    call reference(tisspoints, gtt, gbartt, ct_gold, ctprev, qt, nnt, nnt_dev, isp)
+    call reference(tisspoints, gtt, gbartt, ct_gold, ctprev, qt, nnt, nnt_dev, step, isp)
   end do
 
   !$omp target update from(ct(1:nnt_dev))
@@ -89,64 +90,80 @@ program main
 
   start_time = omp_get_wtime()
   do iter = 1, repeat
-    call tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, isp)
+    call tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, step, isp)
   end do
   elapsed = omp_get_wtime() - start_time
   !$omp end target data
 
-  write(*,'(A,F0.6,A)') 'Average kernel execution time: ', elapsed / real(repeat, real64), ' (s)'
+  write(time_text,'(F0.6)') elapsed / real(repeat, real64)
+  if (time_text(1:1) == '.') time_text = '0' // trim(time_text)
+  write(*,'(A,A,A)') 'Average kernel execution time: ', trim(time_text), ' (s)'
 
   deallocate(tisspoints, gtt, gbartt, ct, ctprev, qt, ct_gold)
 
 contains
 
-  subroutine tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, isp)
-    integer, intent(in) :: nnt, nnt_dev, isp
+  subroutine tissue(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, step, isp)
+    integer, intent(in) :: nnt, nnt_dev, step, isp
     integer, intent(in) :: tisspoints(3 * nnt_dev)
     real(real32), intent(in) :: gtt(nsp * nnt_dev), gbartt(nsp * nnt_dev), ctprev(nnt_dev), qt(nnt_dev)
-    real(real32), intent(out) :: ct(nnt_dev)
-    integer :: itp, jtp, ix, iy, iz, jx, jy, jz, ixyz
+    real(real32), intent(inout) :: ct(nnt_dev)
+    integer :: i, itp, itp1, jtp, ix, iy, iz, jx, jy, jz, ixyz, istep
     real(real32) :: p
 
-    !$omp target teams distribute parallel do private(jtp, ix, iy, iz, jx, jy, jz, ixyz, p) thread_limit(256)
-    do itp = 0, nnt - 1
-      ix = tisspoints(itp + 1)
-      iy = tisspoints(itp + nnt + 1)
-      iz = tisspoints(itp + 2 * nnt + 1)
+    !$omp target teams distribute parallel do private(jtp, ix, iy, iz, jx, jy, jz, ixyz, p, itp, itp1, istep) thread_limit(256)
+    do i = 0, step * nnt - 1
+      itp = i / step
+      itp1 = modulo(i, step)
       p = 0.0_real32
-      do jtp = 0, nnt - 1
-        jx = tisspoints(jtp + 1)
-        jy = tisspoints(jtp + nnt + 1)
-        jz = tisspoints(jtp + 2 * nnt + 1)
-        ixyz = abs(jx - ix) + abs(jy - iy) + abs(jz - iz) + (isp - 1) * nnt_dev
-        p = p + gtt(ixyz + 1) * ctprev(jtp + 1) + gbartt(ixyz + 1) * qt(jtp + 1)
+      if (itp < nnt) then
+        ix = tisspoints(itp + 1)
+        iy = tisspoints(itp + nnt + 1)
+        iz = tisspoints(itp + 2 * nnt + 1)
+        do jtp = itp1, nnt - 1, step
+          jx = tisspoints(jtp + 1)
+          jy = tisspoints(jtp + nnt + 1)
+          jz = tisspoints(jtp + 2 * nnt + 1)
+          ixyz = abs(jx - ix) + abs(jy - iy) + abs(jz - iz) + (isp - 1) * nnt_dev
+          p = p + gtt(ixyz + 1) * ctprev(jtp + 1) + gbartt(ixyz + 1) * qt(jtp + 1)
+        end do
+        if (itp1 == 0) ct(itp + 1) = p
+      end if
+      do istep = 1, step - 1
+        if (itp1 == istep .and. itp < nnt) ct(itp + 1) = ct(itp + 1) + p
       end do
-      ct(itp + 1) = p
     end do
     !$omp end target teams distribute parallel do
   end subroutine tissue
 
-  subroutine reference(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, isp)
-    integer, intent(in) :: nnt, nnt_dev, isp
+  subroutine reference(tisspoints, gtt, gbartt, ct, ctprev, qt, nnt, nnt_dev, step, isp)
+    integer, intent(in) :: nnt, nnt_dev, step, isp
     integer, intent(in) :: tisspoints(3 * nnt_dev)
     real(real32), intent(in) :: gtt(nsp * nnt_dev), gbartt(nsp * nnt_dev), ctprev(nnt_dev), qt(nnt_dev)
-    real(real32), intent(out) :: ct(nnt_dev)
-    integer :: itp, jtp, ix, iy, iz, jx, jy, jz, ixyz
+    real(real32), intent(inout) :: ct(nnt_dev)
+    integer :: i, itp, itp1, jtp, ix, iy, iz, jx, jy, jz, ixyz, istep
     real(real32) :: p
 
-    do itp = 0, nnt - 1
-      ix = tisspoints(itp + 1)
-      iy = tisspoints(itp + nnt + 1)
-      iz = tisspoints(itp + 2 * nnt + 1)
+    do i = 0, step * nnt - 1
+      itp = i / step
+      itp1 = modulo(i, step)
       p = 0.0_real32
-      do jtp = 0, nnt - 1
-        jx = tisspoints(jtp + 1)
-        jy = tisspoints(jtp + nnt + 1)
-        jz = tisspoints(jtp + 2 * nnt + 1)
-        ixyz = abs(jx - ix) + abs(jy - iy) + abs(jz - iz) + (isp - 1) * nnt_dev
-        p = p + gtt(ixyz + 1) * ctprev(jtp + 1) + gbartt(ixyz + 1) * qt(jtp + 1)
+      if (itp < nnt) then
+        ix = tisspoints(itp + 1)
+        iy = tisspoints(itp + nnt + 1)
+        iz = tisspoints(itp + 2 * nnt + 1)
+        do jtp = itp1, nnt - 1, step
+          jx = tisspoints(jtp + 1)
+          jy = tisspoints(jtp + nnt + 1)
+          jz = tisspoints(jtp + 2 * nnt + 1)
+          ixyz = abs(jx - ix) + abs(jy - iy) + abs(jz - iz) + (isp - 1) * nnt_dev
+          p = p + gtt(ixyz + 1) * ctprev(jtp + 1) + gbartt(ixyz + 1) * qt(jtp + 1)
+        end do
+        if (itp1 == 0) ct(itp + 1) = p
+      end if
+      do istep = 1, step - 1
+        if (itp1 == istep .and. itp < nnt) ct(itp + 1) = ct(itp + 1) + p
       end do
-      ct(itp + 1) = p
     end do
   end subroutine reference
 

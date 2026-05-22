@@ -87,25 +87,34 @@ contains
     real(dp), intent(in) :: x(n), xfun(nfun)
     real(dp) :: lmax
     integer :: j, i1, i2
-    real(dp) :: t, value
+    real(dp) :: t
+    real(dp), allocatable :: linterp(:)
 
     lmax = 0.0_dp
+    allocate(linterp(n * nfun))
 
-    !$omp target teams distribute parallel do map(to:x(1:n), xfun(1:nfun)) reduction(max:lmax) private(i1, i2, t, value)
+    !$omp target data map(tofrom:lmax) &
+    !$omp& map(to:x(1:n), xfun(1:nfun)) &
+    !$omp& map(alloc:linterp(1:n * nfun))
+    !$omp target teams distribute parallel do thread_limit(256) reduction(max:lmax) private(i1, i2, t)
     do j = 1, nfun
       t = 0.0_dp
       do i1 = 1, n
-        value = 1.0_dp
+        linterp((i1 - 1) * nfun + j) = 1.0_dp
         do i2 = 1, n
           if (i1 /= i2) then
-            value = value * (xfun(j) - x(i2)) / (x(i1) - x(i2))
+            linterp((i1 - 1) * nfun + j) = linterp((i1 - 1) * nfun + j) * &
+              (xfun(j) - x(i2)) / (x(i1) - x(i2))
           end if
         end do
-        t = t + abs(value)
+        t = t + abs(linterp((i1 - 1) * nfun + j))
       end do
       lmax = max(lmax, t)
     end do
     !$omp end target teams distribute parallel do
+    !$omp end target data
+
+    deallocate(linterp)
   end function lebesgue_function
 
   function lebesgue_constant(n, x, nfun, xfun) result(lmax)

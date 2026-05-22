@@ -14,10 +14,15 @@ program main
       import :: c_int
       integer(c_int) :: value
     end function c_rand
+
+    subroutine c_exit(status) bind(C, name="exit")
+      import :: c_int
+      integer(c_int), value :: status
+    end subroutine c_exit
   end interface
 
   character(len=256) :: arg0, arg1, arg2
-  integer :: length, repeat, i
+  integer :: length, repeat, i, ios
   integer, allocatable :: y(:)
   real(real32), allocatable :: x1(:), x2(:), dout(:), dx1(:), dx2(:), rdx1(:), rdx2(:)
   real(real32), parameter :: margin = 0.01_real32
@@ -28,14 +33,15 @@ program main
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 2) then
     print '(3A)', 'Usage: ', trim(arg0), ' <number of elements> <repeat>'
-    stop 1
+    call c_exit(1_c_int)
   end if
 
   call get_command_argument(1, arg1)
   call get_command_argument(2, arg2)
-  read(arg1, *) length
-  read(arg2, *) repeat
-  if (length <= 0 .or. repeat <= 0) stop 1
+  read(arg1, *, iostat=ios) length
+  if (ios /= 0) length = 0
+  read(arg2, *, iostat=ios) repeat
+  if (ios /= 0) repeat = 0
 
   allocate(y(length), x1(length), x2(length), dout(length), dx1(length), dx2(length), rdx1(length), rdx2(length))
 
@@ -91,7 +97,6 @@ program main
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
   deallocate(y, x1, x2, dout, dx1, dx2, rdx1, rdx2)

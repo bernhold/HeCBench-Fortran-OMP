@@ -1,6 +1,6 @@
 program main
   use iso_fortran_env, only: real32, real64, int64
-  use iso_c_binding, only: c_int
+  use iso_c_binding, only: c_double, c_float, c_int64_t
   use omp_lib, only: omp_get_wtime
   implicit none
 
@@ -9,15 +9,19 @@ program main
   character(len=64) :: arg
 
   interface
-    subroutine c_srand(seed) bind(C, name="srand")
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
+    subroutine dp_fill_real32(srcA, srcB, iNumElements, src_size, dst_ref) bind(C, name="dp_fill_real32")
+      import :: c_float, c_int64_t
+      real(c_float) :: srcA(*), srcB(*)
+      integer(c_int64_t), value :: iNumElements, src_size
+      real(c_float) :: dst_ref
+    end subroutine dp_fill_real32
 
-    function c_rand() bind(C, name="rand") result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine dp_fill_real64(srcA, srcB, iNumElements, src_size, dst_ref) bind(C, name="dp_fill_real64")
+      import :: c_double, c_int64_t
+      real(c_double) :: srcA(*), srcB(*)
+      integer(c_int64_t), value :: iNumElements, src_size
+      real(c_double) :: dst_ref
+    end subroutine dp_fill_real64
   end interface
 
   argc = command_argument_count()
@@ -45,6 +49,18 @@ contains
     global_size = ((elements + local_size - 1_int64) / local_size) * local_size
   end function round_up
 
+  subroutine print_average_kernel_time(milliseconds)
+    real(real64), intent(in) :: milliseconds
+    character(len=64) :: value
+
+    write(value, '(F0.6)') milliseconds
+    if (value(1:1) == '.') then
+      write(*,'("Average kernel execution time 0",A," (ms)")') trim(value)
+    else
+      write(*,'("Average kernel execution time ",A," (ms)")') trim(value)
+    end if
+  end subroutine print_average_kernel_time
+
   subroutine dot_real32(num_elements, repeat)
     integer(int64), intent(in) :: num_elements
     integer, intent(in) :: repeat
@@ -61,17 +77,7 @@ contains
     write(*,'("Local Work Size ",A,A,"= ",I0)') achar(9), achar(9), local_work_size
 
     allocate(src_a(src_size), src_b(src_size))
-    call c_srand(19937_c_int)
-    dst_ref = 0.0_real32
-    do i = 1, num_elements
-      src_a(i) = real(mod(c_rand(), 65_c_int) - 32_c_int, real32)
-      src_b(i) = real(mod(c_rand(), 65_c_int) - 32_c_int, real32)
-      dst_ref = dst_ref + src_a(i) * src_b(i)
-    end do
-    do i = num_elements + 1, src_size
-      src_a(i) = 0.0_real32
-      src_b(i) = 0.0_real32
-    end do
+    call dp_fill_real32(src_a, src_b, num_elements, src_size, dst_ref)
 
     !$omp target data map(to: src_a(1:src_size), src_b(1:src_size))
       do iter = 1, 100
@@ -99,7 +105,7 @@ contains
       end_time = omp_get_wtime()
     !$omp end target data
 
-    write(*,'("Average kernel execution time ",F0.6," (ms)")') (end_time - start_time) * 1000.0_real64 / repeat
+    call print_average_kernel_time((end_time - start_time) * 1000.0_real64 / repeat)
     if (abs(real(dst, real64) - real(dst_ref, real64)) <= 0.0_real64) then
       write(*,'("PASS",/)')
     else
@@ -123,17 +129,7 @@ contains
     write(*,'("Local Work Size ",A,A,"= ",I0)') achar(9), achar(9), local_work_size
 
     allocate(src_a(src_size), src_b(src_size))
-    call c_srand(19937_c_int)
-    dst_ref = 0.0_real64
-    do i = 1, num_elements
-      src_a(i) = real(mod(c_rand(), 65_c_int) - 32_c_int, real64)
-      src_b(i) = real(mod(c_rand(), 65_c_int) - 32_c_int, real64)
-      dst_ref = dst_ref + src_a(i) * src_b(i)
-    end do
-    do i = num_elements + 1, src_size
-      src_a(i) = 0.0_real64
-      src_b(i) = 0.0_real64
-    end do
+    call dp_fill_real64(src_a, src_b, num_elements, src_size, dst_ref)
 
     !$omp target data map(to: src_a(1:src_size), src_b(1:src_size))
       do iter = 1, 100
@@ -161,7 +157,7 @@ contains
       end_time = omp_get_wtime()
     !$omp end target data
 
-    write(*,'("Average kernel execution time ",F0.6," (ms)")') (end_time - start_time) * 1000.0_real64 / repeat
+    call print_average_kernel_time((end_time - start_time) * 1000.0_real64 / repeat)
     if (dst == dst_ref) then
       write(*,'("PASS",/)')
     else

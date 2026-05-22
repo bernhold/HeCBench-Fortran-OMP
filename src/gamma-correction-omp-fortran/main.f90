@@ -5,9 +5,11 @@ program main
 
   character(len=256) :: arg0, arg
   integer :: width, height, block_size, repeat
-  integer :: image_size, i, iter, errors, max_error, err
-  integer, allocatable :: image(:), reference(:), pixel(:)
+  integer :: image_size, i, iter
+  integer, parameter :: b = 1, g = 2, r = 3, a = 4, channels = 4
+  integer, allocatable :: image(:,:), reference(:,:), pixel(:,:)
   real(real64) :: start_time, total_time
+  character(len=32) :: avg_time_text
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 4) then
@@ -23,50 +25,40 @@ program main
   if (width <= 0 .or. height <= 0 .or. block_size <= 0 .or. repeat <= 0) stop 1
 
   image_size = width * height
-  allocate(image(image_size), reference(image_size), pixel(image_size))
+  allocate(image(channels, image_size), reference(channels, image_size), pixel(channels, image_size))
 
   call fill_fractal(width, height, image)
   do i = 1, image_size
-    reference(i) = gamma_value(image(i))
+    call gamma_pixel(reference(:, i), image(:, i))
   end do
 
   pixel = image
   total_time = 0.0_real64
 
-  !$omp target data map(tofrom: pixel(1:image_size))
+  !$omp target data map(from: pixel(1:channels, 1:image_size))
   do iter = 1, repeat
     pixel = image
-    !$omp target update to(pixel(1:image_size))
+    !$omp target update to(pixel(1:channels, 1:image_size))
 
     start_time = omp_get_wtime()
     !$omp target teams distribute parallel do thread_limit(block_size)
     do i = 1, image_size
-      pixel(i) = int(255.0_real32 * &
-        (real(pixel(i), real32) / 255.0_real32) * &
-        (real(pixel(i), real32) / 255.0_real32))
-      if (pixel(i) > 255) pixel(i) = 255
+      call gamma_pixel(pixel(:, i), pixel(:, i))
     end do
     !$omp end target teams distribute parallel do
     total_time = total_time + (omp_get_wtime() - start_time)
   end do
   !$omp end target data
 
-  write(*,'(A,F0.6,A)') 'Average kernel execution time ', total_time / real(repeat, real64), ' (s)'
+  write(avg_time_text, '(F20.6)') total_time / real(repeat, real64)
+  avg_time_text = adjustl(avg_time_text)
+  if (avg_time_text(1:1) == '.') avg_time_text = '0' // trim(avg_time_text)
+  write(*,'(A,A,A)') 'Average kernel execution time ', trim(avg_time_text), ' (s)'
 
-  errors = 0
-  max_error = 0
-  do i = 1, image_size
-    err = abs(pixel(i) - reference(i))
-    if (err /= 0) then
-      errors = errors + 1
-      if (err > max_error) max_error = err
-    end if
-  end do
-
-  if (errors == 0) then
+  if (all(pixel == reference)) then
     write(*,'(A)') 'PASS'
   else
-    write(*,'(A,I0,A,I0)') 'FAIL errors=', errors, ' max_error=', max_error
+    write(*,'(A)') 'FAIL'
   end if
 
   deallocate(image, reference, pixel)
@@ -75,17 +67,20 @@ contains
 
   subroutine fill_fractal(width, height, image)
     integer, intent(in) :: width, height
-    integer, intent(out) :: image(:)
+    integer, intent(out) :: image(:,:)
     integer :: x, y, idx
-    real(real64) :: fractal_pixel
+    integer :: fractal_pixel
 
     do y = 0, height - 1
       do x = 0, width - 1
         idx = y * width + x + 1
-        fractal_pixel = fractal_value(x, y, width, height)
-        if (fractal_pixel < 0.0_real64) fractal_pixel = 0.0_real64
-        if (fractal_pixel > 255.0_real64) fractal_pixel = 255.0_real64
-        image(idx) = int(fractal_pixel)
+        fractal_pixel = int(fractal_value(x, y, width, height))
+        if (fractal_pixel < 0) fractal_pixel = 0
+        if (fractal_pixel > 255) fractal_pixel = 255
+        image(b, idx) = fractal_pixel
+        image(g, idx) = fractal_pixel
+        image(r, idx) = fractal_pixel
+        image(a, idx) = fractal_pixel
       end do
     end do
   end subroutine fill_fractal
@@ -117,13 +112,21 @@ contains
     fractal_value = res
   end function fractal_value
 
-  integer function gamma_value(value)
-    integer, intent(in) :: value
+  subroutine gamma_pixel(pixel, input_pixel)
+    integer, intent(out) :: pixel(:)
+    integer, intent(in) :: input_pixel(:)
+    integer :: gamma_value
     real(real32) :: v
 
-    v = real(value, real32) / 255.0_real32
+    v = (0.3_real32 * real(input_pixel(r), real32) + &
+         0.59_real32 * real(input_pixel(g), real32) + &
+         0.11_real32 * real(input_pixel(b), real32)) / 255.0_real32
     gamma_value = int(255.0_real32 * v * v)
     if (gamma_value > 255) gamma_value = 255
-  end function gamma_value
+    pixel(b) = gamma_value
+    pixel(g) = gamma_value
+    pixel(r) = gamma_value
+    pixel(a) = gamma_value
+  end subroutine gamma_pixel
 
 end program main

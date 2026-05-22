@@ -27,8 +27,6 @@ program main
     stop 1
   end if
 
-  if (seq_length <= 0 .or. num_layers <= 0 .or. hidden_size <= 0 .or. mini_batch <= 0 .or. num_runs <= 0) error stop 'invalid arguments'
-
   write(*, '(A,I0,A,I0,A,I0,A,I0)') 'seqLength ', seq_length, ', numLayers ', num_layers, &
       ', hiddenSize ', hidden_size, ', miniBatch ', mini_batch
 
@@ -92,6 +90,18 @@ contains
       data(idx) = lcg_value(idx - 1, n)
     end do
   end subroutine init_array
+
+  subroutine init_dev(data, n)
+    real(real32), intent(out) :: data(:)
+    integer, intent(in) :: n
+    integer :: idx
+
+    !$omp target teams distribute parallel do thread_limit(256)
+    do idx = 1, n
+      data(idx) = lcg_value(idx - 1, n)
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine init_dev
 
   subroutine test_ref(hidden_size, mini_batch, seq_length, num_layers, test_i, test_h, test_c)
     integer, intent(in) :: hidden_size, mini_batch, seq_length, num_layers
@@ -164,20 +174,17 @@ contains
     tmp_i_size = 4 * seq_length * num_elements
     act_size = 4 * seq_length * num_layers * num_elements
     allocate(h_data(hc_size), i_data(i_size), c_data(hc_size), bias(bias_size), tmp_h(tmp_h_size), tmp_i(tmp_i_size), gates(act_size))
-    h_data = 0.0_real32
-    i_data = 0.0_real32
-    gates = 0.0_real32
-    call init_array(tmp_h)
-    call init_array(tmp_i)
-    call init_array(c_data)
-    call init_array(bias)
 
     l_start = 0
     l_end = 0
     r_start = 0
     recur_batch_size = 2
-    !$omp target data map(to: tmp_h(1:tmp_h_size), tmp_i(1:tmp_i_size), bias(1:bias_size)) &
-    !$omp& map(tofrom: h_data(1:hc_size), i_data(1:i_size), c_data(1:hc_size), gates(1:act_size))
+    !$omp target data map(alloc: h_data(1:hc_size), i_data(1:i_size), c_data(1:hc_size), bias(1:bias_size), &
+    !$omp& tmp_h(1:tmp_h_size), tmp_i(1:tmp_i_size), gates(1:act_size))
+    call init_dev(tmp_h, tmp_h_size)
+    call init_dev(tmp_i, tmp_i_size)
+    call init_dev(c_data, hc_size)
+    call init_dev(bias, bias_size)
     do
       call next_tile(l_start, l_end, r_start, r_end, recur_batch_size, seq_length, num_layers)
       if (l_end < 0) exit

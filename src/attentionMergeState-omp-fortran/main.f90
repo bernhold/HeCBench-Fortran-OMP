@@ -50,19 +50,23 @@ contains
              prefix_lse(0:lse_size - 1), suffix_lse(0:lse_size - 1), &
              lse(0:lse_size - 1), ref_lse(0:lse_size - 1))
 
-    call initialize_real(prefix_output, output_size, 1234_int32, 1.0_real32 / sqrt(real(head_size, real32)))
-    call initialize_real(suffix_output, output_size, 1234_int32, 1.0_real32 / sqrt(real(head_size, real32)))
-    call initialize_real(prefix_lse, lse_size, 1234_int32, 1.0_real32 / sqrt(real(head_size, real32)))
-    call initialize_real(suffix_lse, lse_size, 1234_int32, 1.0_real32 / sqrt(real(head_size, real32)))
-    output = 0.0_real32
-    lse = 0.0_real32
+    !$omp target data map(alloc: prefix_output(0:output_size - 1), suffix_output(0:output_size - 1), &
+    !$omp& output(0:output_size - 1), lse(0:lse_size - 1), &
+    !$omp& prefix_lse(0:lse_size - 1), suffix_lse(0:lse_size - 1))
+    call uniform_fill_kernel(prefix_output, output_size, -1.0_real32 / sqrt(real(head_size, real32)), &
+                             1.0_real32 / sqrt(real(head_size, real32)), 1234_int32)
+    call uniform_fill_kernel(suffix_output, output_size, -1.0_real32 / sqrt(real(head_size, real32)), &
+                             1.0_real32 / sqrt(real(head_size, real32)), 1234_int32)
+    call uniform_fill_kernel(prefix_lse, lse_size, -1.0_real32 / sqrt(real(head_size, real32)), &
+                             1.0_real32 / sqrt(real(head_size, real32)), 1234_int32)
+    call uniform_fill_kernel(suffix_lse, lse_size, -1.0_real32 / sqrt(real(head_size, real32)), &
+                             1.0_real32 / sqrt(real(head_size, real32)), 1234_int32)
+
+    !$omp target update from(prefix_output(0:output_size - 1), suffix_output(0:output_size - 1), &
+    !$omp& prefix_lse(0:lse_size - 1), suffix_lse(0:lse_size - 1))
 
     call merge_reference(ref_output, prefix_output, suffix_output, ref_lse, prefix_lse, suffix_lse, &
                          num_tokens, num_heads, head_size)
-
-    !$omp target data map(to: prefix_output(0:output_size - 1), suffix_output(0:output_size - 1), &
-    !$omp& prefix_lse(0:lse_size - 1), suffix_lse(0:lse_size - 1)) &
-    !$omp& map(tofrom: output(0:output_size - 1), lse(0:lse_size - 1))
     do i = 1, 100
       call merge_kernel(output, prefix_output, suffix_output, lse, prefix_lse, suffix_lse, &
                         num_tokens, num_heads, head_size)
@@ -106,22 +110,25 @@ contains
     deallocate(prefix_output, suffix_output, output, ref_output, prefix_lse, suffix_lse, lse, ref_lse)
   end subroutine merge_attn_states_launcher
 
-  subroutine initialize_real(data, n, seed, scale)
+  subroutine uniform_fill_kernel(data, n, low, high, seed)
     real(real32), intent(out) :: data(0:)
     integer(int64), intent(in) :: n
+    real(real32), intent(in) :: low, high
     integer(int32), intent(in) :: seed
-    real(real32), intent(in) :: scale
     integer(int64) :: idx
     integer(int32) :: rng
-    real(real32) :: u
+    real(real32) :: u, v
 
+    !$omp target teams distribute parallel do private(idx, rng, u, v)
     do idx = 0_int64, n - 1_int64
       rng = ieor(seed, int(idx, int32))
       rng = xorshift32(rng)
       u = real(ishft(rng, -8), real32) * 5.9604644775390625e-8_real32
-      data(idx) = -scale + 2.0_real32 * scale * u
+      v = low + (high - low) * u
+      data(idx) = v
     end do
-  end subroutine initialize_real
+    !$omp end target teams distribute parallel do
+  end subroutine uniform_fill_kernel
 
   integer(int32) function xorshift32(state)
     integer(int32), intent(inout) :: state
@@ -170,29 +177,51 @@ contains
     real(real32), intent(inout) :: output(0:), lse(0:)
     real(real32), intent(in) :: prefix_output(0:), suffix_output(0:), prefix_lse(0:), suffix_lse(0:)
     integer, intent(in) :: num_tokens, num_heads, head_size
-    integer :: global_idx, total, token_head_idx, d, t, h, lse_idx, base
+    integer :: bid, lane, global_idx, token_head_idx, pack_idx, pack_offset
+    integer :: pack_size, threads_per_head, token_head_threads, num_threads, grid
+    integer :: i, t, h, lse_idx, base
     real(real32) :: p_lse, s_lse, max_lse, p_exp, s_exp, out_se, p_scale, s_scale
 
-    total = num_tokens * num_heads * head_size
-    !$omp target teams distribute parallel do thread_limit(128) &
-    !$omp& private(global_idx, token_head_idx, d, t, h, lse_idx, base, p_lse, s_lse, max_lse, p_exp, s_exp, out_se, p_scale, s_scale)
-    do global_idx = 0, total - 1
-      token_head_idx = global_idx / head_size
-      d = mod(global_idx, head_size)
-      t = token_head_idx / num_heads
-      h = mod(token_head_idx, num_heads)
-      lse_idx = t * num_heads + h
-      p_lse = prefix_lse(lse_idx)
-      s_lse = suffix_lse(lse_idx)
-      max_lse = max(p_lse, s_lse)
-      p_exp = exp(p_lse - max_lse)
-      s_exp = exp(s_lse - max_lse)
-      out_se = p_exp + s_exp
-      p_scale = p_exp / out_se
-      s_scale = s_exp / out_se
-      base = token_head_idx * head_size
-      output(base + d) = prefix_output(base + d) * p_scale + suffix_output(base + d) * s_scale
-      if (d == 0) lse(lse_idx) = log(out_se) + max_lse
+    pack_size = 16 / 4
+    threads_per_head = head_size / pack_size
+    token_head_threads = num_tokens * num_heads * threads_per_head
+    num_threads = 128
+    grid = (token_head_threads + num_threads - 1) / num_threads
+
+    !$omp target teams distribute parallel do collapse(2) num_teams(grid) num_threads(num_threads) &
+    !$omp& private(bid, lane, global_idx, token_head_idx, pack_idx, pack_offset, i, t, h, lse_idx, base, &
+    !$omp& p_lse, s_lse, max_lse, p_exp, s_exp, out_se, p_scale, s_scale)
+    do bid = 0, grid - 1
+      do lane = 0, num_threads - 1
+        global_idx = bid * num_threads + lane
+        if (global_idx < token_head_threads) then
+          token_head_idx = global_idx / threads_per_head
+          pack_idx = mod(global_idx, threads_per_head)
+          t = token_head_idx / num_heads
+          h = mod(token_head_idx, num_heads)
+          pack_offset = pack_idx * pack_size
+          base = t * num_heads * head_size + h * head_size
+          lse_idx = t * num_heads + h
+
+          p_lse = prefix_lse(lse_idx)
+          s_lse = suffix_lse(lse_idx)
+          max_lse = max(p_lse, s_lse)
+          p_exp = exp(p_lse - max_lse)
+          s_exp = exp(s_lse - max_lse)
+          out_se = p_exp + s_exp
+          p_scale = p_exp / out_se
+          s_scale = s_exp / out_se
+
+          if (pack_offset < head_size) then
+            do i = 0, pack_size - 1
+              output(base + pack_offset + i) = prefix_output(base + pack_offset + i) * p_scale + &
+                                               suffix_output(base + pack_offset + i) * s_scale
+            end do
+          end if
+
+          if (pack_idx == 0) lse(lse_idx) = log(out_se) + max_lse
+        end if
+      end do
     end do
     !$omp end target teams distribute parallel do
   end subroutine merge_kernel2

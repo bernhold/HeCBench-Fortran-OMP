@@ -39,12 +39,15 @@ contains
     integer, intent(out) :: n_passes
     integer :: argc, i, n
     character(len=256) :: arg
+    logical :: ok, help_requested
 
     verbose = .false.
     n_passes = 10
+    ok = .true.
+    help_requested = .false.
     argc = command_argument_count()
     i = 1
-    do while (i <= argc)
+    do while (i <= argc .and. ok)
       call get_command_argument(i, arg, length=n)
       select case (arg(:n))
       case ('-v', '--verbose')
@@ -53,18 +56,172 @@ contains
         i = i + 1
         if (i <= argc) then
           call get_command_argument(i, arg, length=n)
-          read(arg(:n), *) n_passes
+          call parse_passes_value(arg(:n), n_passes, ok)
+        else
+          print '(a)', 'failure, option: --passes with no value'
+          print '(a)', 'Ignoring remaining options'
+          ok = .false.
+        end if
+      case ('-c', '--configFile')
+        i = i + 1
+        if (i <= argc) then
+          call get_command_argument(i, arg, length=n)
+          ok = parse_config_file(arg(:n), verbose, n_passes, help_requested)
+        else
+          print '(a)', 'failure, option: --configFile with no value'
+          print '(a)', 'Ignoring remaining options'
+          ok = .false.
         end if
       case ('-h', '--help')
-        call usage()
-        stop
+        help_requested = .true.
+        ok = .false.
+      case default
+        ok = parse_unknown_or_short_option(arg(:n), i, argc, verbose, n_passes, help_requested)
       end select
       i = i + 1
     end do
+    if (.not. ok) then
+      call usage()
+      if (help_requested) stop
+      stop 1
+    end if
   end subroutine parse_args
+
+  subroutine parse_passes_value(text, n_passes, ok)
+    character(len=*), intent(in) :: text
+    integer, intent(out) :: n_passes
+    logical, intent(out) :: ok
+    integer :: ios
+
+    read(text, *, iostat=ios) n_passes
+    ok = ios == 0
+    if (.not. ok) then
+      print '(a)', 'failure, option: --passes with malformed value'
+      print '(a)', 'Ignoring remaining options'
+    end if
+  end subroutine parse_passes_value
+
+  recursive logical function parse_config_file(file_name, verbose, n_passes, help_requested) result(ok)
+    character(len=*), intent(in) :: file_name
+    logical, intent(inout) :: verbose
+    integer, intent(inout) :: n_passes
+    logical, intent(inout) :: help_requested
+    character(len=512) :: line, key, value
+    integer :: unit, ios, split_at
+
+    ok = .true.
+    open(newunit=unit, file=trim(file_name), status='old', action='read', iostat=ios)
+    if (ios /= 0) then
+      print '(a)', 'Bad config file'
+      ok = .false.
+      return
+    end if
+
+    do
+      read(unit, '(a)', iostat=ios) line
+      if (ios /= 0) exit
+      line = adjustl(line)
+      if (len_trim(line) == 0) cycle
+      if (line(1:1) == '#') cycle
+
+      split_at = scan(line, ' ')
+      if (split_at == 0) then
+        key = trim(line)
+        value = ''
+      else
+        key = trim(line(:split_at - 1))
+        value = adjustl(line(split_at + 1:))
+      end if
+
+      select case (trim(key))
+      case ('verbose')
+        verbose = .true.
+      case ('passes')
+        call parse_passes_value(trim(value), n_passes, ok)
+      case ('help')
+        help_requested = .true.
+        ok = .false.
+      case ('configFile')
+        ok = parse_config_file(trim(value), verbose, n_passes, help_requested)
+      case default
+        print '(a,a)', 'Option not recognized: --', trim(key)
+        print '(a)', 'Ignoring remaining options'
+        ok = .false.
+      end select
+      if (.not. ok) exit
+    end do
+    close(unit)
+  end function parse_config_file
+
+  logical function parse_unknown_or_short_option(arg, i, argc, verbose, n_passes, help_requested) result(ok)
+    character(len=*), intent(in) :: arg
+    integer, intent(inout) :: i
+    integer, intent(in) :: argc
+    logical, intent(inout) :: verbose
+    integer, intent(inout) :: n_passes
+    logical, intent(inout) :: help_requested
+    character(len=256) :: value
+    integer :: n, p, nopts
+
+    ok = .true.
+    n = len_trim(arg)
+    if (n == 0 .or. arg(1:1) /= '-') then
+      print '(a,a)', 'failure, no leading - in option: ', trim(arg)
+      print '(a)', 'Ignoring remaining options'
+      ok = .false.
+      return
+    end if
+
+    if (n >= 2 .and. arg(1:2) == '--') then
+      print '(a,a)', 'Option not recognized: ', trim(arg)
+      print '(a)', 'Ignoring remaining options'
+      ok = .false.
+      return
+    end if
+
+    nopts = n - 1
+    do p = 1, nopts
+      select case (arg(p + 1:p + 1))
+      case ('v')
+        verbose = .true.
+      case ('n')
+        if (i + 1 > argc .or. p < nopts) then
+          print '(a)', 'failure, option: -n with no value'
+          print '(a)', 'Ignoring remaining options'
+          ok = .false.
+          return
+        end if
+        i = i + 1
+        call get_command_argument(i, value, length=n)
+        call parse_passes_value(value(:n), n_passes, ok)
+        if (.not. ok) return
+      case ('c')
+        if (i + 1 > argc .or. p < nopts) then
+          print '(a)', 'failure, option: -c with no value'
+          print '(a)', 'Ignoring remaining options'
+          ok = .false.
+          return
+        end if
+        i = i + 1
+        call get_command_argument(i, value, length=n)
+        ok = parse_config_file(value(:n), verbose, n_passes, help_requested)
+        if (.not. ok) return
+      case ('h')
+        help_requested = .true.
+        ok = .false.
+        return
+      case default
+        print '(a,a,a)', 'Option: ', trim(arg), ' not recognized.'
+        print '(a)', 'Ignoring remaining options'
+        ok = .false.
+        return
+      end select
+    end do
+  end function parse_unknown_or_short_option
 
   subroutine usage()
     print '(a)', 'Usage: ./main [options]'
+    print '(a)', '  -c, --configFile <file> specify configuration file'
     print '(a)', '  -v, --verbose        enable verbose output'
     print '(a)', '  -n, --passes <N>     specify number of passes'
     print '(a)', '  -h, --help           print this usage'

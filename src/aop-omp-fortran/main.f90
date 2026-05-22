@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_double, c_size_t
   use, intrinsic :: iso_fortran_env, only : int32, real64
   use omp_lib
   implicit none
@@ -7,7 +7,6 @@ program main
   integer, parameter :: r_w_matrices_smem_slots = 12
   integer, parameter :: max_grid_size = 2048
   integer, parameter :: temp_storage_size = 4 * max_grid_size
-  real(real64), parameter :: pi = 3.1415926535897932384626433832795_real64
 
   integer :: num_timesteps, num_paths_k, num_paths, num_runs
   real(real64) :: t_expiry, strike, s0, rate, sigma, dt
@@ -15,18 +14,17 @@ program main
   real(real64), allocatable :: samples(:), paths(:), svds(:), temp_storage(:)
   integer(int32), allocatable :: all_out_of_the_money(:)
   real(real64) :: h_price, cpu_price, ref_price, start_time, end_time, total_elapsed_ms
-  integer :: run, i
+  integer :: run
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
+    subroutine aop_reset_rng() bind(C, name='aop_reset_rng')
+    end subroutine aop_reset_rng
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine aop_fill_samples(samples, count) bind(C, name='aop_fill_samples')
+      import :: c_double, c_size_t
+      real(c_double), intent(out) :: samples(*)
+      integer(c_size_t), value :: count
+    end subroutine aop_fill_samples
   end interface
 
   num_timesteps = 100
@@ -68,14 +66,12 @@ program main
   h_price = 0.0_real64
   cpu_price = 0.0_real64
   total_elapsed_ms = 0.0_real64
-  call c_srand(1_c_int)
+  call aop_reset_rng()
 
   !$omp target data map(alloc: samples(0:num_timesteps*num_paths-1), paths(0:num_timesteps*num_paths-1), &
   !$omp& svds(0:16*num_timesteps-1), all_out_of_the_money(0:num_timesteps-1), temp_storage(0:temp_storage_size-1))
     do run = 1, num_runs
-      do i = 0, num_timesteps * num_paths - 1
-        samples(i) = normal_sample()
-      end do
+      call aop_fill_samples(samples, int(num_timesteps * num_paths, c_size_t))
 
       start_time = omp_get_wtime()
       call do_run(samples, num_timesteps, num_paths, price_put, strike, dt, s0, rate, sigma, &
@@ -190,18 +186,6 @@ contains
     end if
   end subroutine require_value
 
-  real(real64) function normal_sample() result(value)
-    real(real64) :: u1, u2
-    u1 = max(uniform_sample(), tiny(1.0_real64))
-    u2 = uniform_sample()
-    value = sqrt(-2.0_real64 * log(u1)) * cos(2.0_real64 * pi * u2)
-  end function normal_sample
-
-  real(real64) function uniform_sample() result(value)
-    real(real64), parameter :: rand_max = 2147483647.0_real64
-    value = real(c_rand(), real64) / rand_max
-  end function uniform_sample
-
   real(real64) function payoff_value(is_put, strike, s) result(value)
     logical, intent(in) :: is_put
     real(real64), intent(in) :: strike, s
@@ -295,41 +279,98 @@ contains
     real(real64), intent(in) :: paths(0:)
     integer(int32), intent(inout) :: all_out_of_the_money(0:)
     real(real64), intent(out) :: svds(0:)
-    integer :: timestep, path, offset, m, found_paths, slot
-    real(real64) :: s, x_sq, sums(4), smem_svds(r_w_matrices_smem_slots)
+    integer, parameter :: num_threads_per_block = 256
+    integer :: scan_input(0:num_threads_per_block - 1), scan_output(0:num_threads_per_block)
+    integer :: timestep, path, offset, m, found_paths, slot, lid, bid, in_the_money
+    integer :: partial_sum, total_sum, lsum, not_enough_paths
+    real(real64) :: s, x, x_sq, sums(4), lsums(4), smem_svds(r_w_matrices_smem_slots)
 
-    !$omp target teams distribute parallel do thread_limit(1) private(path, offset, m, found_paths, slot, s, x_sq, sums, smem_svds)
-    do timestep = 0, num_teams - 1
+    !$omp target teams num_teams(num_teams) thread_limit(num_threads_per_block) &
+    !$omp& private(scan_input, scan_output, smem_svds, lsums, lsum)
+    !$omp parallel private(lid, bid, timestep, offset, m, sums, found_paths, path, s, in_the_money, partial_sum, &
+    !$omp& total_sum, x, x_sq, not_enough_paths, slot)
+      lid = omp_get_thread_num()
+      bid = omp_get_team_num()
+      timestep = bid
       offset = timestep * num_paths
       sums = 0.0_real64
-      smem_svds = 0.0_real64
       m = 0
       found_paths = 0
-      do path = 0, num_paths - 1
+      if (lid < r_w_matrices_smem_slots) smem_svds(lid + 1) = 0.0_real64
+      !$omp barrier
+
+      do path = lid, num_paths - 1, num_threads_per_block
         s = paths(offset + path)
-        if (is_in_the_money(price_put, strike, s) /= 0) then
-          if (found_paths < 3) then
-            smem_svds(found_paths + 1) = s
-            found_paths = found_paths + 1
-          end if
-          m = m + 1
-          x_sq = s * s
-          sums(1) = sums(1) + s
-          sums(2) = sums(2) + x_sq
-          sums(3) = sums(3) + x_sq * s
-          sums(4) = sums(4) + x_sq * x_sq
+        in_the_money = is_in_the_money(price_put, strike, s)
+
+        scan_input(lid) = in_the_money
+        !$omp barrier
+        if (lid == 0) then
+          scan_output(0) = 0
+          do slot = 1, num_threads_per_block
+            scan_output(slot) = scan_output(slot - 1) + scan_input(slot - 1)
+          end do
         end if
+        !$omp barrier
+        partial_sum = scan_output(lid)
+        total_sum = scan_output(num_threads_per_block)
+
+        if (found_paths < 3) then
+          if (in_the_money /= 0 .and. found_paths + partial_sum < 3) smem_svds(found_paths + partial_sum + 1) = s
+          !$omp barrier
+          found_paths = found_paths + total_sum
+        end if
+
+        if (lid == 0) lsum = 0
+        !$omp barrier
+        !$omp atomic update
+        lsum = ior(lsum, in_the_money)
+        !$omp barrier
+        if (lsum == 0) cycle
+
+        m = m + in_the_money
+        x = 0.0_real64
+        x_sq = 0.0_real64
+        if (in_the_money /= 0) then
+          x = s
+          x_sq = s * s
+        end if
+        sums(1) = sums(1) + x
+        sums(2) = sums(2) + x_sq
+        sums(3) = sums(3) + x_sq * x
+        sums(4) = sums(4) + x_sq * x_sq
       end do
-      if (m < min_in_the_money) then
-        all_out_of_the_money(timestep) = 1_int32
+      !$omp barrier
+
+      if (lid == 0) lsum = 0
+      !$omp barrier
+      !$omp atomic update
+      lsum = lsum + m
+      !$omp barrier
+
+      not_enough_paths = 0
+      if (lid == 0 .and. lsum < min_in_the_money) not_enough_paths = 1
+      !$omp barrier
+
+      if (not_enough_paths /= 0) then
+        if (lid == 0) all_out_of_the_money(bid) = 1_int32
       else
-        call svd_3x3(m, sums, smem_svds)
-        do slot = 0, r_w_matrices_smem_slots - 1
-          svds(16 * timestep + slot) = smem_svds(slot + 1)
-        end do
+        if (lid == 0) lsums = 0.0_real64
+        !$omp barrier
+        !$omp atomic update
+        lsums(1) = lsums(1) + sums(1)
+        !$omp atomic update
+        lsums(2) = lsums(2) + sums(2)
+        !$omp atomic update
+        lsums(3) = lsums(3) + sums(3)
+        !$omp barrier
+
+        if (lid == 0) call svd_3x3(lsum, lsums, smem_svds)
+        !$omp barrier
+        if (lid < r_w_matrices_smem_slots) svds(16 * bid + lid) = smem_svds(lid + 1)
       end if
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp end parallel
+    !$omp end target teams
   end subroutine prepare_svd_kernel
 
   subroutine compute_beta_kernel(num_paths, price_put, strike, svd, paths, cashflows, all_out_of_the_money, beta)
@@ -477,7 +518,6 @@ contains
           sums(1) = sums(1) + s
           sums(2) = sums(2) + s * s
           sums(3) = sums(3) + s * s * s
-          sums(4) = sums(4) + s * s * s * s
         end if
       end do
       if (m < 4) then

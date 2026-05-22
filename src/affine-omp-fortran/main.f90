@@ -7,8 +7,8 @@ program affine_main
   integer, parameter :: y_size = 512
   integer, parameter :: image_size = x_size * y_size
   real(real32), parameter :: pi = 3.14159265359_real32
-  integer(int32), parameter :: white = 1_int32
-  integer(int32), allocatable :: input_image(:), output_image(:), output_image_ref(:)
+  integer(int16), parameter :: white = 1_int16
+  integer(int16), allocatable :: input_image(:), output_image(:), output_image_ref(:)
   integer :: iterations
   integer :: x, y, max_error, bytes_count
   real(real64) :: start_time, elapsed_s
@@ -41,13 +41,14 @@ program affine_main
   end do
   elapsed_s = (omp_get_wtime() - start_time) / real(iterations, real64)
   !$omp end target data
-  write(*,'("   Average kernel execution time ",F0.9," (s)")') elapsed_s
+  write(*,'("   Average kernel execution time ",F11.9," (s)")') elapsed_s
 
   call affine_reference(input_image, output_image_ref)
   max_error = 0
   do y = 0, y_size - 1
     do x = 0, x_size - 1
-      max_error = max(max_error, abs(output_image(y * x_size + x) - output_image_ref(y * x_size + x)))
+      max_error = max(max_error, abs(unpack_u16(output_image(y * x_size + x)) - &
+          unpack_u16(output_image_ref(y * x_size + x))))
     end do
   end do
   write(*,'("   Max output error is ",I0)') max_error
@@ -62,9 +63,8 @@ contains
 
   subroutine read_raw_image(path, image)
     character(len=*), intent(in) :: path
-    integer(int32), intent(out) :: image(0:)
-    integer(int16), allocatable :: raw(:)
-    integer :: unit, i
+    integer(int16), intent(out) :: image(0:)
+    integer :: unit
     logical :: exists
 
     inquire(file=path, exist=exists)
@@ -73,29 +73,18 @@ contains
       stop 1
     end if
 
-    allocate(raw(0:image_size-1))
     open(newunit=unit, file=path, access="stream", form="unformatted", status="old", action="read")
-    read(unit) raw
+    read(unit) image
     close(unit)
-
-    do i = 0, image_size - 1
-      image(i) = iand(int(raw(i), int32), 65535_int32)
-    end do
   end subroutine read_raw_image
 
   subroutine write_raw_image(path, image)
     character(len=*), intent(in) :: path
-    integer(int32), intent(in) :: image(0:)
-    integer(int16), allocatable :: raw(:)
-    integer :: unit, i
-
-    allocate(raw(0:image_size-1))
-    do i = 0, image_size - 1
-      raw(i) = pack_u16(image(i))
-    end do
+    integer(int16), intent(in) :: image(0:)
+    integer :: unit
 
     open(newunit=unit, file=path, access="stream", form="unformatted", status="replace", action="write")
-    write(unit) raw
+    write(unit) image
     close(unit)
   end subroutine write_raw_image
 
@@ -107,9 +96,15 @@ contains
     pack_u16 = transfer(masked, pack_u16)
   end function pack_u16
 
+  integer(int32) function unpack_u16(value)
+    integer(int16), intent(in) :: value
+
+    unpack_u16 = iand(int(value, int32), 65535_int32)
+  end function unpack_u16
+
   subroutine affine_kernel(src, dst)
-    integer(int32), intent(in) :: src(0:)
-    integer(int32), intent(out) :: dst(0:)
+    integer(int16), intent(in) :: src(0:)
+    integer(int16), intent(out) :: dst(0:)
     integer :: x, y
 
     !$omp target teams distribute parallel do collapse(2) thread_limit(256)
@@ -122,8 +117,8 @@ contains
   end subroutine affine_kernel
 
   subroutine affine_reference(src, dst)
-    integer(int32), intent(in) :: src(0:)
-    integer(int32), intent(out) :: dst(0:)
+    integer(int16), intent(in) :: src(0:)
+    integer(int16), intent(out) :: dst(0:)
     integer :: x, y
 
     do y = 0, y_size - 1
@@ -133,8 +128,8 @@ contains
     end do
   end subroutine affine_reference
 
-  integer(int32) function affine_pixel(src, x, y)
-    integer(int32), intent(in) :: src(0:)
+  integer(int16) function affine_pixel(src, x, y)
+    integer(int16), intent(in) :: src(0:)
     integer, intent(in) :: x, y
     real(real32), parameter :: lx_rot = 30.0_real32
     real(real32), parameter :: ly_rot = 0.0_real32
@@ -181,11 +176,13 @@ contains
     y_frac = y_new - real(n, real32)
 
     if (m >= 0 .and. m + 1 < x_size .and. n >= 0 .and. n + 1 < y_size) then
-      gray_new = (1.0_real32 - y_frac) * ((1.0_real32 - x_frac) * real(src(n * x_size + m), real32) + &
-          x_frac * real(src(n * x_size + m + 1), real32)) + &
-          y_frac * ((1.0_real32 - x_frac) * real(src((n + 1) * x_size + m), real32) + &
-          x_frac * real(src((n + 1) * x_size + m + 1), real32))
-      affine_pixel = int(gray_new, int32)
+      gray_new = (1.0_real32 - y_frac) * ((1.0_real32 - x_frac) * &
+          real(unpack_u16(src(n * x_size + m)), real32) + &
+          x_frac * real(unpack_u16(src(n * x_size + m + 1)), real32)) + &
+          y_frac * ((1.0_real32 - x_frac) * &
+          real(unpack_u16(src((n + 1) * x_size + m)), real32) + &
+          x_frac * real(unpack_u16(src((n + 1) * x_size + m + 1)), real32))
+      affine_pixel = pack_u16(int(gray_new, int32))
     else if (((m + 1 == x_size) .and. n >= 0 .and. n < y_size) .or. &
         ((n + 1 == y_size) .and. m >= 0 .and. m < x_size)) then
       affine_pixel = src(n * x_size + m)

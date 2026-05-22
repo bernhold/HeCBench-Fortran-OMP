@@ -6,7 +6,7 @@ program main
 
   integer :: num_history, repeat, n, total_length, i
   integer(int32), allocatable :: history_lengths(:), result_lengths(:), ref_result_lengths(:), points(:)
-  real(real64), allocatable :: history(:), extrema(:)
+  real(real64), allocatable :: history(:), extrema(:), results(:, :)
   real(real64) :: start_time, end_time, avg_us
   logical :: ok
   integer(c_int), parameter :: c_rand_max = 2147483647_c_int
@@ -39,7 +39,7 @@ program main
 
   print '(A,I0)', 'Total history length = ', total_length
 
-  allocate(history(total_length), extrema(total_length), points(total_length))
+  allocate(history(total_length), extrema(total_length), points(total_length), results(3, total_length))
   do i = 1, total_length
     history(i) = real(c_rand(), real64) / real(c_rand_max, real64)
   end do
@@ -48,17 +48,18 @@ program main
   ref_result_lengths = 0_int32
 
   !$omp target data map(to: history_lengths(1:num_history+1), history(1:total_length)) &
-  !$omp& map(alloc: extrema(1:total_length), points(1:total_length)) map(from: result_lengths(1:num_history))
+  !$omp& map(alloc: extrema(1:total_length), points(1:total_length), results(1:3,1:total_length)) &
+  !$omp& map(from: result_lengths(1:num_history))
   start_time = omp_get_wtime()
   do n = 1, repeat
-    call rainflow_device(history, history_lengths, extrema, points, result_lengths, num_history)
+    call rainflow_device(history, history_lengths, extrema, points, results, result_lengths, num_history)
   end do
   end_time = omp_get_wtime()
   avg_us = ((end_time - start_time) * 1.0e6_real64) / real(repeat, real64)
   print '(A,F0.6,A)', 'Average kernel execution time: ', avg_us, ' (us)'
   !$omp end target data
 
-  call rainflow_reference(history, history_lengths, extrema, points, ref_result_lengths, num_history)
+  call rainflow_reference(history, history_lengths, extrema, points, results, ref_result_lengths, num_history)
 
   ok = .true.
   do i = 1, num_history
@@ -75,7 +76,7 @@ program main
     stop 1
   end if
 
-  deallocate(history_lengths, result_lengths, ref_result_lengths, history, extrema, points)
+  deallocate(history_lengths, result_lengths, ref_result_lengths, history, extrema, points, results)
 
 contains
 
@@ -87,10 +88,11 @@ contains
     read(buffer, *) read_arg
   end function read_arg
 
-  subroutine rainflow_device(history, history_lengths, extrema, points, result_lengths, num_history)
+  subroutine rainflow_device(history, history_lengths, extrema, points, results, result_lengths, num_history)
     real(real64), intent(in) :: history(:)
     integer(int32), intent(in) :: history_lengths(:)
     real(real64), intent(out) :: extrema(:)
+    real(real64), intent(out) :: results(:, :)
     integer(int32), intent(out) :: points(:), result_lengths(:)
     integer, intent(in) :: num_history
     integer :: i, offset, history_length
@@ -99,15 +101,16 @@ contains
     do i = 1, num_history
       offset = int(history_lengths(i)) + 1
       history_length = int(history_lengths(i + 1) - history_lengths(i))
-      call execute_history(history, offset, history_length, extrema, points, result_lengths(i))
+      call execute_history(history, offset, history_length, extrema, points, results, result_lengths(i))
     end do
     !$omp end target teams distribute parallel do
   end subroutine rainflow_device
 
-  subroutine rainflow_reference(history, history_lengths, extrema, points, result_lengths, num_history)
+  subroutine rainflow_reference(history, history_lengths, extrema, points, results, result_lengths, num_history)
     real(real64), intent(in) :: history(:)
     integer(int32), intent(in) :: history_lengths(:)
     real(real64), intent(out) :: extrema(:)
+    real(real64), intent(out) :: results(:, :)
     integer(int32), intent(out) :: points(:), result_lengths(:)
     integer, intent(in) :: num_history
     integer :: i, offset, history_length
@@ -115,18 +118,19 @@ contains
     do i = 1, num_history
       offset = int(history_lengths(i)) + 1
       history_length = int(history_lengths(i + 1) - history_lengths(i))
-      call execute_history(history, offset, history_length, extrema, points, result_lengths(i))
+      call execute_history(history, offset, history_length, extrema, points, results, result_lengths(i))
     end do
   end subroutine rainflow_reference
 
-  subroutine execute_history(history, offset, history_length, extrema, points, result_length)
+  subroutine execute_history(history, offset, history_length, extrema, points, results, result_length)
     real(real64), intent(in) :: history(:)
     integer, intent(in) :: offset, history_length
     real(real64), intent(out) :: extrema(:)
+    real(real64), intent(out) :: results(:, :)
     integer(int32), intent(out) :: points(:)
     integer(int32), intent(out) :: result_length
     integer :: extrema_length, pidx, eidx, ridx, i
-    real(real64) :: x_range, y_range
+    real(real64) :: x_range, y_range, y_mean, range, mean
 
     call extrema_history(history, offset, history_length, extrema, extrema_length)
 
@@ -142,11 +146,19 @@ contains
         y_range = abs(extrema(offset + int(points(offset + pidx - 2))) - extrema(offset + int(points(offset + pidx - 1))))
         if (x_range < y_range) exit
         ridx = ridx + 1
+        y_mean = 0.5_real64 * (extrema(offset + int(points(offset + pidx - 2))) + &
+                               extrema(offset + int(points(offset + pidx - 1))))
         if (pidx == 2) then
+          results(1, offset + ridx) = 0.5_real64
+          results(2, offset + ridx) = y_range
+          results(3, offset + ridx) = y_mean
           points(offset) = points(offset + 1)
           points(offset + 1) = points(offset + 2)
           pidx = 1
         else
+          results(1, offset + ridx) = 1.0_real64
+          results(2, offset + ridx) = y_range
+          results(3, offset + ridx) = y_mean
           points(offset + pidx - 2) = points(offset + pidx)
           pidx = pidx - 2
         end if
@@ -154,7 +166,12 @@ contains
     end do
 
     do i = 0, pidx - 1
+      range = abs(extrema(offset + int(points(offset + i))) - extrema(offset + int(points(offset + i + 1))))
+      mean = 0.5_real64 * (extrema(offset + int(points(offset + i))) + extrema(offset + int(points(offset + i + 1))))
       ridx = ridx + 1
+      results(1, offset + ridx) = 0.5_real64
+      results(2, offset + ridx) = range
+      results(3, offset + ridx) = mean
     end do
     result_length = int(ridx + 1, int32)
   end subroutine execute_history

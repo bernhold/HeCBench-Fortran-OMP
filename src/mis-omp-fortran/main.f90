@@ -5,15 +5,16 @@ program mis
 
   integer, parameter :: threads_per_block = 256
   integer, parameter :: blocks = 24
-  integer(int32), parameter :: in_status = int(z'000000FE', int32)
-  integer(int32), parameter :: out_status = 0_int32
+  integer(int32), parameter :: in_status_unsigned = 254_int32
+  integer(int8), parameter :: in_status = -2_int8  ! C++ unsigned char 0xfe
+  integer(int8), parameter :: out_status = 0_int8
 
   character(len=512) :: graph_file
   character(len=64) :: arg
   integer :: argc, repeat
   integer(int32) :: nodes, edges
   integer(int32), allocatable :: nidx(:), nlist(:), eweight(:)
-  integer(int32), allocatable :: nstatus(:)
+  integer(int8), allocatable :: nstatus(:)
 
   argc = command_argument_count()
   print '(A)', 'ECL-MIS v1.3 (main.cpp)'
@@ -93,27 +94,27 @@ contains
     integer, intent(in) :: repeat
     integer(int32), intent(in) :: nodes, edges
     integer(int32), intent(in) :: nidx(:), nlist(:)
-    integer(int32), intent(out) :: nstatus(:)
+    integer(int8), volatile, intent(out) :: nstatus(:)
 
     real(real32) :: avg, scaledavg, runtime
     real(real64) :: start_time, end_time
     integer :: pass
 
     avg = real(edges, real32) / real(nodes, real32)
-    scaledavg = real((in_status / 2_int32) - 1_int32, real32) * avg
+    scaledavg = real((in_status_unsigned / 2_int32) - 1_int32, real32) * avg
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: nidx(1:nodes+1), nlist(1:edges)) &
     !$omp& map(from: nstatus(1:nodes))
+    start_time = omp_get_wtime()
     do pass = 1, 100
       call initialize_status(nodes, nidx, nstatus, avg, scaledavg)
       call converge_status(nodes, nidx, nlist, nstatus)
     end do
-    !$omp end target data
     end_time = omp_get_wtime()
+    !$omp end target data
 
     runtime = real(end_time - start_time, real32) / real(repeat, real32)
-    print '(A,F0.6,A)', 'compute time: ', runtime, ' s'
+    print '(A,F8.6,A)', 'compute time: ', runtime, ' s'
     print '(A,F0.6,A)', 'throughput: ', real(nodes, real32) * 0.000001_real32 / runtime, &
         ' Mnodes/s'
     print '(A,F0.6,A)', 'throughput: ', real(edges, real32) * 0.000001_real32 / runtime, &
@@ -123,7 +124,7 @@ contains
   subroutine initialize_status(nodes, nidx, nstatus, avg, scaledavg)
     integer(int32), intent(in) :: nodes
     integer(int32), intent(in) :: nidx(:)
-    integer(int32), intent(inout) :: nstatus(:)
+    integer(int8), volatile, intent(inout) :: nstatus(:)
     real(real32), intent(in) :: avg, scaledavg
 
     integer(int32) :: i, degree, res
@@ -142,7 +143,7 @@ contains
         h = modulo(ieor(ishft(h, -16), h), 4294967296_int64)
         x = real(degree, real32) - real(h, real32) * 0.00000000023283064365386962890625_real32
         res = int(scaledavg / (avg + x), int32)
-        nstatus(i) = ior(res + res, 1_int32)
+        nstatus(i) = int(ior(res + res, 1_int32), int8)
       end if
     end do
     !$omp end target teams distribute parallel do
@@ -151,13 +152,13 @@ contains
   subroutine converge_status(nodes, nidx, nlist, nstatus)
     integer(int32), intent(in) :: nodes
     integer(int32), intent(in) :: nidx(:), nlist(:)
-    integer(int32), intent(inout) :: nstatus(:)
+    integer(int8), volatile, intent(inout) :: nstatus(:)
 
-    integer(int32) :: from, incr, missing, v, i, neighbor, nv
+    integer(int32) :: from, incr, missing, v, i, neighbor, nv, nv_unsigned, neighbor_status
     logical :: blocked
 
     !$omp target teams num_teams(blocks) thread_limit(threads_per_block)
-    !$omp parallel private(from,incr,missing,v,i,neighbor,nv,blocked)
+    !$omp parallel private(from,incr,missing,v,i,neighbor,nv,nv_unsigned,neighbor_status,blocked)
       from = omp_get_thread_num() + omp_get_team_num() * threads_per_block + 1
       incr = omp_get_num_teams() * threads_per_block
 
@@ -168,10 +169,14 @@ contains
           if (iand(nv, 1_int32) /= 0_int32) then
             blocked = .false.
             i = nidx(v) + 1
+            nv_unsigned = nv
+            if (nv_unsigned < 0_int32) nv_unsigned = nv_unsigned + 256_int32
             do while (i <= nidx(v + 1))
               neighbor = nlist(i) + 1
-              if (.not. ((nv > nstatus(neighbor)) .or. &
-                  ((nv == nstatus(neighbor)) .and. ((v - 1) > nlist(i))))) then
+              neighbor_status = int(nstatus(neighbor), int32)
+              if (neighbor_status < 0_int32) neighbor_status = neighbor_status + 256_int32
+              if (.not. ((nv_unsigned > neighbor_status) .or. &
+                  ((nv_unsigned == neighbor_status) .and. ((v - 1) > nlist(i))))) then
                 blocked = .true.
                 exit
               end if
@@ -195,7 +200,8 @@ contains
 
   subroutine verify_mis(nodes, nidx, nlist, nstatus)
     integer(int32), intent(in) :: nodes
-    integer(int32), intent(in) :: nidx(:), nlist(:), nstatus(:)
+    integer(int32), intent(in) :: nidx(:), nlist(:)
+    integer(int8), intent(in) :: nstatus(:)
 
     integer(int32) :: v, i, flag
 

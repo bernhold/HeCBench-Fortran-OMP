@@ -6,6 +6,11 @@ program main
 
   integer, parameter :: chunk_size = 512
   integer, parameter :: value_count = 16
+  integer, parameter :: warp_size = 32
+
+  type :: uint4
+    integer(int32) :: x, y, z, w
+  end type uint4
 
   interface
     subroutine c_srand(seed) bind(C, name='srand')
@@ -81,74 +86,152 @@ contains
     !$omp end target data
   end subroutine split_sort
 
+  function scanwarp(val, sData, maxlevel) result(scan)
+    integer(int32), value :: val
+    integer(int32), volatile, intent(inout) :: sData(:)
+    integer, value :: maxlevel
+    integer(int32) :: scan
+    integer :: localId, idx
+
+    localId = omp_get_thread_num()
+    idx = 2 * localId - iand(localId, warp_size - 1)
+    sData(idx + 1) = 0_int32
+    idx = idx + warp_size
+    sData(idx + 1) = val
+
+    if (0 <= maxlevel) sData(idx + 1) = sData(idx + 1) + sData(idx)
+    if (1 <= maxlevel) sData(idx + 1) = sData(idx + 1) + sData(idx - 1)
+    if (2 <= maxlevel) sData(idx + 1) = sData(idx + 1) + sData(idx - 3)
+    if (3 <= maxlevel) sData(idx + 1) = sData(idx + 1) + sData(idx - 7)
+    if (4 <= maxlevel) sData(idx + 1) = sData(idx + 1) + sData(idx - 15)
+
+    scan = sData(idx + 1) - val
+  end function scanwarp
+
+  function scan4(idata, ptr) result(val4)
+    type(uint4), value :: idata
+    integer(int32), volatile, intent(inout) :: ptr(:)
+    type(uint4) :: val4
+    integer(int32) :: sum0, sum1, sum2, val
+    integer :: idx
+
+    idx = omp_get_thread_num()
+    val4 = idata
+    sum0 = val4%x
+    sum1 = val4%y + sum0
+    sum2 = val4%z + sum1
+
+    val = val4%w + sum2
+    val = scanwarp(val, ptr, 4)
+    !$omp barrier
+
+    if (iand(idx, warp_size - 1) == warp_size - 1) then
+      ptr(ishft(idx, -5) + 1) = val + val4%w + sum2
+    end if
+    !$omp barrier
+
+    if (idx < warp_size) ptr(idx + 1) = scanwarp(ptr(idx + 1), ptr, 2)
+    !$omp barrier
+
+    val = val + ptr(ishft(idx, -5) + 1)
+
+    val4%x = val
+    val4%y = val + sum0
+    val4%z = val + sum1
+    val4%w = val + sum2
+  end function scan4
+
+  function rank4(preds, sMem, numtrue) result(rank)
+    type(uint4), value :: preds
+    integer(int32), volatile, intent(inout) :: sMem(:), numtrue(:)
+    type(uint4) :: address, rank
+    integer :: localId, localSize, idx
+
+    localId = omp_get_thread_num()
+    localSize = omp_get_num_threads()
+    address = scan4(preds, sMem)
+
+    if (localId == localSize - 1) numtrue(1) = address%w + preds%w
+    !$omp barrier
+
+    idx = localId * 4
+    if (preds%x /= 0) then
+      rank%x = address%x
+    else
+      rank%x = numtrue(1) + idx - address%x
+    end if
+    if (preds%y /= 0) then
+      rank%y = address%y
+    else
+      rank%y = numtrue(1) + idx + 1 - address%y
+    end if
+    if (preds%z /= 0) then
+      rank%z = address%z
+    else
+      rank%z = numtrue(1) + idx + 2 - address%z
+    end if
+    if (preds%w /= 0) then
+      rank%w = address%w
+    else
+      rank%w = numtrue(1) + idx + 3 - address%w
+    end if
+  end function rank4
+
   subroutine sort_chunks(out, nkeys)
     integer(int32), intent(inout) :: out(:)
     integer, intent(in) :: nkeys
-    integer :: chunk, base, i, value, pos
-    integer :: hist0, hist1, hist2, hist3, hist4, hist5, hist6, hist7
-    integer :: hist8, hist9, hist10, hist11, hist12, hist13, hist14, hist15
+    integer, parameter :: startbit = 0, nbits = 4, threads = 128
+    integer :: teams
 
-    !$omp target teams distribute parallel do thread_limit(1) private(base, i, value, pos, hist0, hist1, hist2, hist3, &
-    !$omp& hist4, hist5, hist6, hist7, hist8, hist9, hist10, hist11, hist12, hist13, hist14, hist15)
-    do chunk = 0, nkeys / chunk_size - 1
-      base = chunk * chunk_size
-      hist0 = 0; hist1 = 0; hist2 = 0; hist3 = 0
-      hist4 = 0; hist5 = 0; hist6 = 0; hist7 = 0
-      hist8 = 0; hist9 = 0; hist10 = 0; hist11 = 0
-      hist12 = 0; hist13 = 0; hist14 = 0; hist15 = 0
-      do i = 1, chunk_size
-        value = out(base + i)
-        select case (value)
-        case (0); hist0 = hist0 + 1
-        case (1); hist1 = hist1 + 1
-        case (2); hist2 = hist2 + 1
-        case (3); hist3 = hist3 + 1
-        case (4); hist4 = hist4 + 1
-        case (5); hist5 = hist5 + 1
-        case (6); hist6 = hist6 + 1
-        case (7); hist7 = hist7 + 1
-        case (8); hist8 = hist8 + 1
-        case (9); hist9 = hist9 + 1
-        case (10); hist10 = hist10 + 1
-        case (11); hist11 = hist11 + 1
-        case (12); hist12 = hist12 + 1
-        case (13); hist13 = hist13 + 1
-        case (14); hist14 = hist14 + 1
-        case (15); hist15 = hist15 + 1
-        end select
-      end do
-      pos = base + 1
-      call fill_value(out, pos, 0, hist0)
-      call fill_value(out, pos, 1, hist1)
-      call fill_value(out, pos, 2, hist2)
-      call fill_value(out, pos, 3, hist3)
-      call fill_value(out, pos, 4, hist4)
-      call fill_value(out, pos, 5, hist5)
-      call fill_value(out, pos, 6, hist6)
-      call fill_value(out, pos, 7, hist7)
-      call fill_value(out, pos, 8, hist8)
-      call fill_value(out, pos, 9, hist9)
-      call fill_value(out, pos, 10, hist10)
-      call fill_value(out, pos, 11, hist11)
-      call fill_value(out, pos, 12, hist12)
-      call fill_value(out, pos, 13, hist13)
-      call fill_value(out, pos, 14, hist14)
-      call fill_value(out, pos, 15, hist15)
-    end do
-    !$omp end target teams distribute parallel do
+    teams = nkeys / 4 / threads
+    !$omp target teams num_teams(teams) thread_limit(threads)
+    block
+      integer(int32), volatile :: numtrue(1), sMem(chunk_size)
+
+      !$omp parallel
+      block
+        integer :: localId, localSize, globalId, shift
+        type(uint4) :: key, lsb, r
+
+        localId = omp_get_thread_num()
+        localSize = omp_get_num_threads()
+        globalId = omp_get_team_num() * localSize + localId
+
+        key%x = out(globalId * 4 + 1)
+        key%y = out(globalId * 4 + 2)
+        key%z = out(globalId * 4 + 3)
+        key%w = out(globalId * 4 + 4)
+
+        do shift = startbit, startbit + nbits - 1
+          lsb%x = merge(1_int32, 0_int32, iand(ishft(key%x, -shift), 1_int32) == 0_int32)
+          lsb%y = merge(1_int32, 0_int32, iand(ishft(key%y, -shift), 1_int32) == 0_int32)
+          lsb%z = merge(1_int32, 0_int32, iand(ishft(key%z, -shift), 1_int32) == 0_int32)
+          lsb%w = merge(1_int32, 0_int32, iand(ishft(key%w, -shift), 1_int32) == 0_int32)
+
+          r = rank4(lsb, sMem, numtrue)
+
+          sMem(iand(r%x, 3_int32) * localSize + ishft(r%x, -2) + 1) = key%x
+          sMem(iand(r%y, 3_int32) * localSize + ishft(r%y, -2) + 1) = key%y
+          sMem(iand(r%z, 3_int32) * localSize + ishft(r%z, -2) + 1) = key%z
+          sMem(iand(r%w, 3_int32) * localSize + ishft(r%w, -2) + 1) = key%w
+          !$omp barrier
+
+          key%x = sMem(localId + 1)
+          key%y = sMem(localId + localSize + 1)
+          key%z = sMem(localId + 2 * localSize + 1)
+          key%w = sMem(localId + 3 * localSize + 1)
+          !$omp barrier
+        end do
+
+        out(globalId * 4 + 1) = key%x
+        out(globalId * 4 + 2) = key%y
+        out(globalId * 4 + 3) = key%z
+        out(globalId * 4 + 4) = key%w
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine sort_chunks
-
-  subroutine fill_value(out, pos, value, count_value)
-    integer(int32), intent(inout) :: out(:)
-    integer, intent(inout) :: pos
-    integer, intent(in) :: value, count_value
-    integer :: i
-
-    do i = 1, count_value
-      out(pos) = int(value, int32)
-      pos = pos + 1
-    end do
-  end subroutine fill_value
 
   logical function verify(sorted_keys, keys)
     integer(int32), intent(in) :: sorted_keys(:), keys(:)

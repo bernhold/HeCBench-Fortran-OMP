@@ -4,6 +4,7 @@ program main
   use omp_lib
   implicit none
 
+  integer, parameter :: GPU_THREADS = 256
   integer, parameter :: fill_val = -1
   integer :: m, n, b, repeat
 
@@ -90,7 +91,20 @@ contains
     call mask_reference(mode, m, n, b, batch_dim, radius, h_in, seq_len, window, out_ref)
     start_time = omp_get_wtime()
     do r = 1, repeat
-      call mask_device(mode, m, n, b, batch_dim, radius, h_in, seq_len, window, h_out)
+      select case (mode)
+      case (1)
+        call sequenceMaskKernel(n, m, batch_dim, h_in, seq_len, fill_val, h_out)
+      case (2)
+        call windowMaskKernel(n, m, batch_dim, h_in, window, radius, fill_val, h_out)
+      case (3)
+        call upperMaskKernel(n, m, batch_dim, h_in, fill_val, h_out)
+      case (4)
+        call lowerMaskKernel(n, m, batch_dim, h_in, fill_val, h_out)
+      case (5)
+        call upperDiagMaskKernel(n, m, batch_dim, h_in, fill_val, h_out)
+      case default
+        call lowerDiagMaskKernel(n, m, batch_dim, h_in, fill_val, h_out)
+      end select
     end do
     end_time = omp_get_wtime()
     write(*, '(A,A,A,F0.6,A)') 'Average execution time of ', trim(name), ' kernel: ', &
@@ -99,30 +113,181 @@ contains
     call print_mask_ratio(h_out, out_ref, data_size)
   end subroutine run_one_mask
 
-  subroutine mask_device(mode, m, n, b, batch_dim, radius, h_in, seq_len, window, h_out)
-    integer, intent(in) :: mode, m, n, b, batch_dim, radius
-    integer(int32), intent(in) :: h_in(:), seq_len(:), window(:)
+  subroutine sequenceMaskKernel(n, m, b, h_in, seq_lengths, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, fill_val_arg
+    integer(int32), intent(in) :: h_in(:), seq_lengths(:)
     integer(int32), intent(inout) :: h_out(:)
-    integer :: index, i, j, k, ind, total
+    integer :: index, i, j, k, ind
 
-    total = n * m * batch_dim
-    !$omp target teams distribute parallel do thread_limit(256) private(index, i, j, k, ind)
-    do index = 0, total - 1
-      if (b >= 0) then
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
         k = mod(index, m)
         j = mod((index - k) / m, n)
         i = (index - m * j - k) / (n * m)
         ind = n * m * i + m * j + k + 1
-        h_out(ind) = masked_value(mode, k, j, h_in(ind), seq_len(j + 1), window(j + 1), radius)
-      else
+        h_out(ind) = merge(fill_val_arg, h_in(ind), k >= seq_lengths(j + 1))
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
         i = index / m
         j = mod(index, m)
-        ind = index + 1
-        h_out(ind) = masked_value(mode, j, i, h_in(ind), seq_len(i + 1), window(i + 1), radius)
-      end if
-    end do
-    !$omp end target teams distribute parallel do
-  end subroutine mask_device
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), j >= seq_lengths(i + 1))
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine sequenceMaskKernel
+
+  subroutine windowMaskKernel(n, m, b, h_in, window_centers, radius, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, radius, fill_val_arg
+    integer(int32), intent(in) :: h_in(:), window_centers(:)
+    integer(int32), intent(inout) :: h_out(:)
+    integer :: index, i, j, k, ind
+
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
+        k = mod(index, m)
+        j = mod((index - k) / m, n)
+        i = (index - m * j - k) / (n * m)
+        ind = n * m * i + m * j + k + 1
+        h_out(ind) = merge(fill_val_arg, h_in(ind), &
+          k < window_centers(j + 1) - radius .or. k > window_centers(j + 1) + radius)
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
+        i = index / m
+        j = mod(index, m)
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), &
+          j < window_centers(i + 1) - radius .or. j > window_centers(i + 1) + radius)
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine windowMaskKernel
+
+  subroutine upperMaskKernel(n, m, b, h_in, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, fill_val_arg
+    integer(int32), intent(in) :: h_in(:)
+    integer(int32), intent(inout) :: h_out(:)
+    integer :: index, i, j, k, ind
+
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
+        k = mod(index, m)
+        j = mod((index - k) / m, n)
+        i = (index - m * j - k) / (n * m)
+        ind = n * m * i + m * j + k + 1
+        h_out(ind) = merge(fill_val_arg, h_in(ind), k > j)
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
+        i = index / m
+        j = mod(index, m)
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), j > i)
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine upperMaskKernel
+
+  subroutine lowerMaskKernel(n, m, b, h_in, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, fill_val_arg
+    integer(int32), intent(in) :: h_in(:)
+    integer(int32), intent(inout) :: h_out(:)
+    integer :: index, i, j, k, ind
+
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
+        k = mod(index, m)
+        j = mod((index - k) / m, n)
+        i = (index - m * j - k) / (n * m)
+        ind = n * m * i + m * j + k + 1
+        h_out(ind) = merge(fill_val_arg, h_in(ind), k < j)
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
+        i = index / m
+        j = mod(index, m)
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), j < i)
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine lowerMaskKernel
+
+  subroutine upperDiagMaskKernel(n, m, b, h_in, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, fill_val_arg
+    integer(int32), intent(in) :: h_in(:)
+    integer(int32), intent(inout) :: h_out(:)
+    integer :: index, i, j, k, ind
+
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
+        k = mod(index, m)
+        j = mod((index - k) / m, n)
+        i = (index - m * j - k) / (n * m)
+        ind = n * m * i + m * j + k + 1
+        h_out(ind) = merge(fill_val_arg, h_in(ind), k >= j)
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
+        i = index / m
+        j = mod(index, m)
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), j >= i)
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine upperDiagMaskKernel
+
+  subroutine lowerDiagMaskKernel(n, m, b, h_in, fill_val_arg, h_out)
+    integer, intent(in) :: n, m, b, fill_val_arg
+    integer(int32), intent(in) :: h_in(:)
+    integer(int32), intent(inout) :: h_out(:)
+    integer :: index, i, j, k, ind
+
+    if (b >= 0) then
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n) thread_limit(GPU_THREADS) private(index, i, j, k, ind)
+      do index = 0, b * n * m - 1
+        k = mod(index, m)
+        j = mod((index - k) / m, n)
+        i = (index - m * j - k) / (n * m)
+        ind = n * m * i + m * j + k + 1
+        h_out(ind) = merge(fill_val_arg, h_in(ind), k <= j)
+      end do
+      !$omp end target teams distribute parallel do
+    else
+      !$omp target teams distribute parallel do &
+      !$omp& num_teams(m * n / GPU_THREADS) thread_limit(GPU_THREADS) private(index, i, j)
+      do index = 0, n * m - 1
+        i = index / m
+        j = mod(index, m)
+        h_out(index + 1) = merge(fill_val_arg, h_in(index + 1), j <= i)
+      end do
+      !$omp end target teams distribute parallel do
+    end if
+  end subroutine lowerDiagMaskKernel
 
   subroutine mask_reference(mode, m, n, b, batch_dim, radius, h_in, seq_len, window, out_ref)
     integer, intent(in) :: mode, m, n, b, batch_dim, radius
@@ -177,9 +342,9 @@ contains
       if (h_out(idx) /= out_ref(idx)) errors = errors + 1
     end do
     if (errors == 0) then
-      write(*, '(A,F0.6)') 'PASS, Mask ratio: ', real(cnt_fill, real64) / real(data_size, real64)
+      write(*, '(A,F8.6)') 'PASS, Mask ratio: ', real(cnt_fill, real64) / real(data_size, real64)
     else
-      write(*, '(A,F0.6)') 'FAIL, Mask ratio: ', real(cnt_fill, real64) / real(data_size, real64)
+      write(*, '(A,F8.6)') 'FAIL, Mask ratio: ', real(cnt_fill, real64) / real(data_size, real64)
     end if
   end subroutine print_mask_ratio
 

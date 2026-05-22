@@ -1,5 +1,5 @@
 program dense_embedding_main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int
   use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
@@ -19,6 +19,12 @@ program dense_embedding_main
       import :: c_int
       integer(c_int) :: value
     end function c_rand
+
+    subroutine dense_embedding_random_fill(dense, input, dense_size, input_size) bind(C, name="dense_embedding_random_fill")
+      import :: c_float, c_int
+      real(c_float) :: dense(*), input(*)
+      integer(c_int), value :: dense_size, input_size
+    end subroutine dense_embedding_random_fill
   end interface
 
   if (command_argument_count() /= 3) then
@@ -68,11 +74,8 @@ contains
         offset(i) = offset(i-1) + (mod(c_rand(), batch_size) + 1) * ncols
       end do
 
-      do i = 0, dense_size - 1
-        dense(i) = c_rand_range()
-      end do
+      call dense_embedding_random_fill(dense, input, int(dense_size, c_int), int(input_size, c_int))
       do i = 0, input_size - 1
-        input(i) = c_rand_range()
         output_k1(i) = 0.0_real32
         output_k2(i) = 0.0_real32
         output_k3(i) = 0.0_real32
@@ -88,7 +91,7 @@ contains
 
         start_time = omp_get_wtime()
         do i = 1, repeat
-          call dense_kernel(input, dense, output_k1, ncols, batch_size, offset, block_size)
+          call dense_kernel_k1(input, dense, output_k1, ncols, batch_size, offset, block_size)
         end do
         elapsed_us = (omp_get_wtime() - start_time) * 1.0e6_real64 / real(repeat, real64)
         write(*,'("Average execution time of dense embedding kernel (k1): ",F0.6," (us)")') elapsed_us
@@ -96,7 +99,7 @@ contains
 
         start_time = omp_get_wtime()
         do i = 1, repeat
-          call dense_kernel(input, dense, output_k2, ncols, batch_size, offset, block_size)
+          call dense_kernel_k2(input, dense, output_k2, ncols, batch_size, offset, block_size)
         end do
         elapsed_us = (omp_get_wtime() - start_time) * 1.0e6_real64 / real(repeat, real64)
         write(*,'("Average execution time of dense embedding kernel (k2): ",F0.6," (us)")') elapsed_us
@@ -127,10 +130,6 @@ contains
     end do
   end subroutine run_sweep
 
-  real(real32) function c_rand_range()
-    c_rand_range = -1.0_real32 + 2.0_real32 * real(c_rand(), real32) / 2147483647.0_real32
-  end function c_rand_range
-
   subroutine dense_reference(input, dense, output, embedding_dim, batch_size, offset)
     real(real32), intent(in) :: input(0:), dense(0:)
     real(real32), intent(inout) :: output(0:)
@@ -149,26 +148,50 @@ contains
     end do
   end subroutine dense_reference
 
-  subroutine dense_kernel(input, dense, output, embedding_dim, batch_size, offset, block_size)
+  subroutine dense_kernel_k1(input, dense, output, embedding_dim, batch_size, offset, block_size)
+    real(real32), intent(in) :: input(0:), dense(0:)
+    real(real32), intent(inout) :: output(0:)
+    integer, intent(in) :: embedding_dim, batch_size, offset(0:), block_size
+    integer :: batch_idx, grain_size, idx, nested_idx, range, tid
+    real(real32) :: dense_elem
+
+    !$omp target teams num_teams(batch_size) private(batch_idx, grain_size, idx, nested_idx, range, tid, dense_elem)
+    !$omp parallel num_threads(block_size)
+    batch_idx = omp_get_team_num()
+    grain_size = omp_get_num_threads()
+    tid = omp_get_thread_num()
+    range = offset(batch_idx + 1) - offset(batch_idx)
+    do idx = tid, embedding_dim - 1, grain_size
+      dense_elem = dense(batch_idx * embedding_dim + idx)
+      do nested_idx = idx, range - 1, embedding_dim
+        output(offset(batch_idx) + nested_idx) = input(offset(batch_idx) + nested_idx) + dense_elem
+      end do
+    end do
+    !$omp end parallel
+    !$omp end target teams
+  end subroutine dense_kernel_k1
+
+  subroutine dense_kernel_k2(input, dense, output, embedding_dim, batch_size, offset, block_size)
     real(real32), intent(in) :: input(0:), dense(0:)
     real(real32), intent(inout) :: output(0:)
     integer, intent(in) :: embedding_dim, batch_size, offset(0:), block_size
     integer :: batch_idx, idx, nested_idx, range, start_idx
     real(real32) :: dense_elem
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(start_idx, range, nested_idx, dense_elem)
-    do batch_idx = 0, batch_size - 1
-      do idx = 0, embedding_dim - 1
-        start_idx = offset(batch_idx)
-        range = offset(batch_idx + 1) - start_idx
-        dense_elem = dense(batch_idx * embedding_dim + idx)
-        do nested_idx = idx, range - 1, embedding_dim
-          output(start_idx + nested_idx) = input(start_idx + nested_idx) + dense_elem
-        end do
+    !$omp target teams num_teams(batch_size) private(batch_idx, idx, nested_idx, range, start_idx, dense_elem)
+    !$omp parallel num_threads(block_size)
+    batch_idx = omp_get_team_num()
+    start_idx = offset(batch_idx)
+    range = offset(batch_idx + 1) - start_idx
+    do idx = omp_get_thread_num(), embedding_dim - 1, omp_get_num_threads()
+      dense_elem = dense(batch_idx * embedding_dim + idx)
+      do nested_idx = idx, range - 1, embedding_dim
+        output(start_idx + nested_idx) = input(start_idx + nested_idx) + dense_elem
       end do
     end do
-    !$omp end target teams distribute parallel do
-  end subroutine dense_kernel
+    !$omp end parallel
+    !$omp end target teams
+  end subroutine dense_kernel_k2
 
   subroutine dense_kernel_flat(input, dense, output, embedding_dim, batch_size, offset, block_size)
     real(real32), intent(in) :: input(0:), dense(0:)
@@ -176,7 +199,7 @@ contains
     integer, intent(in) :: embedding_dim, batch_size, offset(0:), block_size
     integer :: batch_idx, idx, start_idx, range
 
-    !$omp target teams distribute num_teams(batch_size) thread_limit(256) private(start_idx, range, idx)
+    !$omp target teams distribute num_teams(batch_size) private(start_idx, range, idx)
     do batch_idx = 0, batch_size - 1
       start_idx = offset(batch_idx)
       range = offset(batch_idx + 1) - start_idx

@@ -1,19 +1,17 @@
 program nlll
-  use iso_c_binding, only: c_int
+  use iso_c_binding, only: c_float, c_int32_t, c_int64_t
   use iso_fortran_env, only: int32, int64, real32, real64
   use omp_lib
   implicit none
 
   interface
-    subroutine c_srand(seed) bind(C, name="srand")
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
-
-    function c_rand() bind(C, name="rand") result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine nlll_generate_inputs(input_size, weights_size, target_size, n_classes, &
+                                    input, weights, target) bind(C, name="nlll_generate_inputs")
+      import :: c_float, c_int32_t, c_int64_t
+      integer(c_int64_t), value :: input_size, weights_size, target_size, n_classes
+      real(c_float) :: input(*), weights(*)
+      integer(c_int32_t) :: target(*)
+    end subroutine nlll_generate_inputs
   end interface
 
   integer :: argc
@@ -45,7 +43,6 @@ contains
     integer, intent(in) :: repeat
 
     integer(int64) :: input_size, weights_size, target_size
-    integer(int64) :: i
     real(real32), allocatable :: input(:), weights(:)
     integer(int32), allocatable :: target(:)
     real(real32) :: r_output, r_total_weight
@@ -58,18 +55,9 @@ contains
 
     allocate(input(input_size), weights(weights_size), target(target_size))
 
-    call c_srand(123_c_int)
-
     print '(A)', 'Initialization of input data may take a while..'
-    do i = 1_int64, input_size
-      input(i) = rand_real()
-    end do
-    do i = 1_int64, weights_size
-      weights(i) = rand_real()
-    end do
-    do i = 1_int64, target_size
-      target(i) = int(modulo(int(c_rand(), int64), n_classes), int32) + 1_int32
-    end do
+    call nlll_generate_inputs(input_size, weights_size, target_size, n_classes, &
+                              input, weights, target)
 
     size_average = .true.
     ignore_index = n_classes / 2_int64 + 1_int64
@@ -90,12 +78,6 @@ contains
 
     deallocate(input, weights, target)
   end subroutine driver
-
-  real(real32) function rand_real() result(value)
-    integer(int64), parameter :: rand_max = 2147483647_int64
-
-    value = 2.0_real32 * (real(c_rand(), real32) / real(rand_max, real32)) - 1.0_real32
-  end function rand_real
 
   subroutine reference_nll(output, total_weight, input, target, weights, size_average, &
                            nframe, kdim, ignore_index)
@@ -138,7 +120,6 @@ contains
     integer(int32), intent(in) :: target(:)
 
     real(real32) :: output(1), total_weight(1)
-    real(real32), allocatable :: partial_output(:), partial_weight(:)
     integer(int64) :: input_size, weights_size, target_size
     integer :: iter
     real(real64) :: start_time, end_time, average_us
@@ -147,19 +128,15 @@ contains
     input_size = nframe * n_classes
     weights_size = nframe
     target_size = nframe
-    allocate(partial_output(gpu_threads), partial_weight(gpu_threads))
-
-    start_time = omp_get_wtime()
     !$omp target data map(to: input(1:input_size), weights(1:weights_size), target(1:target_size)) &
-    !$omp& map(alloc: partial_output(1:gpu_threads), partial_weight(1:gpu_threads)) &
     !$omp& map(from: output(1:1), total_weight(1:1))
+    start_time = omp_get_wtime()
     do iter = 1, repeat
-      call nll_loss_kernel(output, total_weight, input, target, weights, partial_output, &
-                           partial_weight, size_average, nframe, n_classes, ignore_index, &
-                           gpu_threads)
+      call nll_loss_kernel(output, total_weight, input, target, weights, size_average, &
+                           nframe, n_classes, ignore_index, gpu_threads)
     end do
-    !$omp end target data
     end_time = omp_get_wtime()
+    !$omp end target data
 
     average_us = ((end_time - start_time) * 1.0e6_real64) / real(repeat, real64)
     print *
@@ -176,43 +153,39 @@ contains
     else
       print '(A)', 'FAIL'
     end if
-
-    deallocate(partial_output, partial_weight)
   end subroutine eval_nll
 
-  subroutine nll_loss_kernel(output, total_weight, input, target, weights, partial_output, &
-                             partial_weight, size_average, nframe, kdim, ignore_index, gpu_threads)
+  subroutine nll_loss_kernel(output, total_weight, input, target, weights, size_average, &
+                             nframe, kdim, ignore_index, gpu_threads)
     real(real32), intent(out) :: output(:), total_weight(:)
     real(real32), intent(in) :: input(:), weights(:)
     integer(int32), intent(in) :: target(:)
-    real(real32), intent(inout) :: partial_output(:), partial_weight(:)
     logical, intent(in) :: size_average
     integer(int64), intent(in) :: nframe, kdim, ignore_index
     integer, intent(in) :: gpu_threads
 
+    real(real32) :: sm_inputs(1024), acc_weight(1024)
     integer :: tid, nthreads, slot
     integer(int64) :: i, t, input_index
     real(real32) :: cur_weight, output_acc, weight_acc
 
-    !$omp target teams num_teams(1) thread_limit(gpu_threads)
+    !$omp target teams num_teams(1) thread_limit(gpu_threads) private(sm_inputs,acc_weight)
     !$omp parallel private(tid,nthreads,slot,i,t,input_index,cur_weight,output_acc,weight_acc)
       tid = omp_get_thread_num()
       nthreads = omp_get_num_threads()
       slot = tid + 1
-      output_acc = 0.0_real32
-      weight_acc = 0.0_real32
+      sm_inputs(slot) = 0.0_real32
+      acc_weight(slot) = 0.0_real32
 
       do i = int(slot, int64), nframe, int(nthreads, int64)
         t = int(target(i), int64)
         if (t /= ignore_index) then
           cur_weight = weights(t)
           input_index = (i - 1_int64) * kdim + t
-          output_acc = output_acc - input(input_index) * cur_weight
-          weight_acc = weight_acc + cur_weight
+          sm_inputs(slot) = sm_inputs(slot) - input(input_index) * cur_weight
+          acc_weight(slot) = acc_weight(slot) + cur_weight
         end if
       end do
-      partial_output(slot) = output_acc
-      partial_weight(slot) = weight_acc
 
       !$omp barrier
 
@@ -220,8 +193,8 @@ contains
         output_acc = 0.0_real32
         weight_acc = 0.0_real32
         do slot = 1, nthreads
-          output_acc = output_acc + partial_output(slot)
-          weight_acc = weight_acc + partial_weight(slot)
+          output_acc = output_acc + sm_inputs(slot)
+          weight_acc = weight_acc + acc_weight(slot)
         end do
         total_weight(1) = weight_acc
         if (size_average) then

@@ -1,6 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, int64, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_int, c_int8_t
   use omp_lib
   implicit none
 
@@ -20,7 +20,8 @@ program main
   character(len=256) :: arg0
   integer :: num_keys, repeat, total_length
   integer :: i, c
-  integer(int32), allocatable :: length(:), offsets(:), keys(:)
+  integer(int32), allocatable :: length(:), offsets(:)
+  integer(c_int8_t), allocatable :: keys(:)
   integer(int64), allocatable :: ref_out(:), device_out(:)
   real(real64) :: start_time, end_time, avg_time
   logical :: ok
@@ -48,7 +49,7 @@ program main
   allocate(keys(max(total_length, 1)))
   do i = 1, num_keys
     do c = 0, int(length(i)) - 1
-      keys(int(offsets(i)) + c + 1) = int(mod(c, 256), int32)
+      keys(int(offsets(i)) + c + 1) = uint8_storage(c)
     end do
   end do
 
@@ -67,7 +68,7 @@ program main
   end do
   end_time = omp_get_wtime()
   avg_time = (end_time - start_time) / real(repeat, real64)
-  print '(A,F0.6,A)', 'Average kernel execution time ', avg_time, ' (s)'
+  print '(A,F8.6,A)', 'Average kernel execution time ', avg_time, ' (s)'
   !$omp end target data
 
   ok = .true.
@@ -99,7 +100,8 @@ contains
 
   subroutine murmurhash_device(num_keys, keys, offsets, length, out)
     integer, intent(in) :: num_keys
-    integer(int32), intent(in) :: keys(:), offsets(:), length(:)
+    integer(c_int8_t), intent(in) :: keys(:)
+    integer(int32), intent(in) :: offsets(:), length(:)
     integer(int64), intent(out) :: out(:)
     integer :: i
     integer(int64) :: h1, h2
@@ -114,7 +116,7 @@ contains
   end subroutine murmurhash_device
 
   subroutine murmurhash3_x64_128(data, start_pos, len, seed, out1, out2)
-    integer(int32), intent(in) :: data(:)
+    integer(c_int8_t), intent(in) :: data(:)
     integer, intent(in) :: start_pos, len, seed
     integer(int64), intent(out) :: out1, out2
     integer(int64), parameter :: c1 = int(z'87c37b91114253d5', int64)
@@ -200,7 +202,7 @@ contains
   end subroutine murmurhash3_x64_128
 
   integer(int64) function getblock64(data, start_pos)
-    integer(int32), intent(in) :: data(:)
+    integer(c_int8_t), intent(in) :: data(:)
     integer, intent(in) :: start_pos
     integer :: n
 
@@ -231,9 +233,21 @@ contains
   end function rotl64
 
   integer(int64) function byte64(value)
-    integer(int32), intent(in) :: value
+    integer(c_int8_t), intent(in) :: value
 
-    byte64 = int(iand(value, int(z'000000ff', int32)), int64)
+    byte64 = int(iand(int(value, int32), int(z'000000ff', int32)), int64)
   end function byte64
+
+  integer(c_int8_t) function uint8_storage(value)
+    integer, intent(in) :: value
+    integer :: byte_value
+
+    byte_value = iand(value, 255)
+    if (byte_value < 128) then
+      uint8_storage = int(byte_value, c_int8_t)
+    else
+      uint8_storage = int(byte_value - 256, c_int8_t)
+    end if
+  end function uint8_storage
 
 end program main

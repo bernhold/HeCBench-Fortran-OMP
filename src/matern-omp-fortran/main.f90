@@ -6,6 +6,7 @@ program matern
 
   integer, parameter :: nsources = 50
   integer, parameter :: sx = 16
+  integer, parameter :: sy = nsources
   integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   real(real32), parameter :: sqrt5 = 2.2360679774997898_real32
 
@@ -112,26 +113,69 @@ contains
     real(real32), intent(in) :: length_scale
     real(real32), intent(in) :: sources(:), targets(:), weights(:)
     real(real32), intent(inout) :: result(:)
-    integer :: t, s, k
-    real(real32) :: squared_diff, diff, sum
+    integer :: teams
 
-    !$omp target teams distribute parallel do thread_limit(sx * 64) private(t,s,k,squared_diff,diff,sum)
-    do t = 1, num_targets
-      sum = 0.0_real32
-      do s = 1, nsources
-        squared_diff = 0.0_real32
-        do k = 1, 3
-          squared_diff = squared_diff + (sources((s - 1) * 3 + k) - targets((t - 1) * 3 + k)) * &
-              (sources((s - 1) * 3 + k) - targets((t - 1) * 3 + k))
-        end do
-        diff = sqrt(squared_diff)
-        sum = sum + (1.0_real32 + sqrt5 * diff / length_scale + &
-            5.0_real32 * squared_diff / (3.0_real32 * length_scale * length_scale)) * &
-            exp(-sqrt5 * diff / length_scale) * weights(s)
-      end do
-      result(t) = sum
-    end do
-    !$omp end target teams distribute parallel do
+    teams = (num_targets + sx - 1) / sx
+
+    !$omp target teams num_teams(teams) thread_limit(sx * 64)
+    block
+      real(real32) :: local_result(sx * sy)
+      real(real32) :: local_targets(sx * 3)
+      real(real32) :: local_sources(sy * 3)
+      real(real32) :: local_weights(sy)
+
+      !$omp parallel
+      block
+        integer :: tx, ty, px, py, k
+        real(real32) :: squared_diff, diff, res
+
+        tx = mod(omp_get_thread_num(), sx)
+        ty = omp_get_thread_num() / sx
+        px = omp_get_team_num() * sx + tx
+        py = ty
+
+        if (px < num_targets .and. py < sy) then
+          if (ty == 0) then
+            do k = 1, 3
+              local_targets(tx * 3 + k) = targets(px * 3 + k)
+            end do
+          end if
+
+          if (tx == 0) then
+            do k = 1, 3
+              local_sources(ty * 3 + k) = sources(py * 3 + k)
+            end do
+            local_weights(ty + 1) = weights(ty + 1)
+          end if
+        end if
+        !$omp barrier
+
+        if (px < num_targets .and. py < sy) then
+          squared_diff = 0.0_real32
+          do k = 1, 3
+            squared_diff = squared_diff + (local_targets(tx * 3 + k) - local_sources(ty * 3 + k)) * &
+                (local_targets(tx * 3 + k) - local_sources(ty * 3 + k))
+          end do
+          diff = sqrt(squared_diff)
+          local_result(tx * sy + ty + 1) = (1.0_real32 + sqrt5 * diff / length_scale + &
+              5.0_real32 * squared_diff / (3.0_real32 * length_scale * length_scale)) * &
+              exp(-sqrt5 * diff / length_scale) * local_weights(ty + 1)
+        end if
+        !$omp barrier
+
+        if (px < num_targets .and. py < sy) then
+          if (ty == 0) then
+            res = 0.0_real32
+            do k = 1, sy
+              res = res + local_result(tx * sy + k)
+            end do
+            result(px + 1) = res
+          end if
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
     !$omp target update from(result(1:num_targets))
   end subroutine matern_kernel
 

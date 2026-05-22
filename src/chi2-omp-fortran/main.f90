@@ -44,8 +44,6 @@ program main
   read(arg4, *) ncontrols
   read(arg5, *) nthreads
   read(arg6, *) repeat
-  if (rows <= 0 .or. cols <= 0 .or. ncases < 0 .or. ncontrols < 0 .or. &
-      ncases + ncontrols > rows .or. nthreads <= 0 .or. repeat <= 0) stop 1
 
   write(*,'(A,I0,A,I0,A,I0,A,I0,A,I0)') 'Individuals=', rows, ' SNPs=', cols, &
     ' cases=', ncases, ' controls=', ncontrols, ' nthreads=', nthreads
@@ -133,8 +131,10 @@ contains
         end if
       end do
 
-      tot_cases = case0 + case1 + case2
-      tot_controls = control0 + control1 + control2
+      tot_cases = 1
+      tot_controls = 1
+      tot_cases = tot_cases + case0 + case1 + case2
+      tot_controls = tot_controls + control0 + control1 + control2
       total = tot_cases + tot_controls
 
       do p = 1, 3
@@ -175,6 +175,8 @@ contains
     integer :: tot_cases, tot_controls, total
     real(real32) :: chisquare, expv, c_expected, con_expected, numerator1, numerator2
 
+    tot_cases = 1
+    tot_controls = 1
     do col = 1, cols
       case0 = 1
       case1 = 1
@@ -206,8 +208,8 @@ contains
         end if
       end do
 
-      tot_cases = case0 + case1 + case2
-      tot_controls = control0 + control1 + control2
+      tot_cases = tot_cases + case0 + case1 + case2
+      tot_controls = tot_controls + control0 + control1 + control2
       total = tot_cases + tot_controls
 
       do p = 1, 3

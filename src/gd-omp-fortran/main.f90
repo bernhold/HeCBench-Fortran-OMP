@@ -16,10 +16,11 @@ program main
   type(classification_data_crs) :: a
   character(len=512) :: arg0, file_path, lambda_arg, alpha_arg, repeat_arg
   real(real32) :: lambda, alpha, obj_val, train_error
+  real(real64) :: repeat_value
   real(real32), allocatable :: x(:), grad(:)
-  integer :: iters
-  integer :: m, n, k, correct
-  real(real32) :: total_obj_val, l2_norm
+  integer :: iters, ios
+  integer :: m, n, k, correct(1)
+  real(real32) :: total_obj_val(1), l2_norm
   real(real64) :: train_start, train_end
 
   call get_command_argument(0, arg0)
@@ -35,8 +36,9 @@ program main
   call get_command_argument(4, repeat_arg)
   read(lambda_arg, *) lambda
   read(alpha_arg, *) alpha
-  read(repeat_arg, *) iters
-  if (iters <= 0) stop 1
+  read(repeat_arg, *, iostat=ios) repeat_value
+  if (ios /= 0) repeat_value = 0.0_real64
+  iters = int(repeat_value)
 
   call get_crsm_from_svm(a, trim(file_path))
   m = a%m
@@ -48,13 +50,16 @@ program main
 
   !$omp target data map(to: a%row_ptr(1:size(a%row_ptr)), a%values(1:size(a%values)), &
   !$omp& a%col_index(1:size(a%col_index)), a%y_label(1:size(a%y_label))) &
-  !$omp& map(tofrom: x(1:n)) map(alloc: grad(1:n))
+  !$omp& map(tofrom: x(1:n)) map(alloc: grad(1:n), total_obj_val(1:1), correct(1:1))
   train_start = omp_get_wtime()
 
   do k = 1, iters
-    total_obj_val = 0.0_real32
-    correct = 0
+    total_obj_val(1) = 0.0_real32
+    correct(1) = 0
     l2_norm = 0.0_real32
+
+    !$omp target update to(total_obj_val(1:1))
+    !$omp target update to(correct(1:1))
 
     grad = 0.0_real32
     !$omp target update to(grad(1:n))
@@ -69,8 +74,11 @@ program main
     ' (s) for ', iters, ' iterations'
   write(*,*)
 
-  obj_val = total_obj_val / real(m, real32) + 0.5_real32 * lambda * l2_norm
-  train_error = 1.0_real32 - (real(correct, real32) / real(m, real32))
+  !$omp target update from(total_obj_val(1:1))
+  !$omp target update from(correct(1:1))
+
+  obj_val = total_obj_val(1) / real(m, real32) + 0.5_real32 * lambda * l2_norm
+  train_error = 1.0_real32 - (real(correct(1), real32) / real(m, real32))
   !$omp end target data
 
   write(*,'(A,F0.6,A,F0.6)') 'object value = ', obj_val, ' train_error = ', train_error
@@ -86,14 +94,14 @@ contains
     real(real32), intent(inout) :: grad(:)
     integer, intent(in) :: row_ptr(:), col_index(:), y_label(:)
     real(real32), intent(in) :: values(:)
-    real(real32), intent(inout) :: total_obj_val
-    integer, intent(inout) :: correct
+    real(real32), intent(inout) :: total_obj_val(:)
+    integer, intent(inout) :: correct(:)
     integer, intent(in) :: m
     integer :: i, j, t
     real(real32) :: xp, v, prediction, accum, temp
 
     !$omp target teams distribute parallel do thread_limit(256) &
-    !$omp& private(i, j, t, xp, v, prediction, accum, temp) map(tofrom: total_obj_val, correct)
+    !$omp& private(i, j, t, xp, v, prediction, accum, temp)
     do i = 1, m
       xp = 0.0_real32
       do j = row_ptr(i), row_ptr(i + 1) - 1
@@ -102,7 +110,7 @@ contains
 
       v = log(1.0_real32 + exp(-xp * real(y_label(i), real32)))
       !$omp atomic update
-      total_obj_val = total_obj_val + v
+      total_obj_val(1) = total_obj_val(1) + v
 
       prediction = 1.0_real32 / (1.0_real32 + exp(-xp))
       if (prediction >= 0.5_real32) then
@@ -112,7 +120,7 @@ contains
       end if
       if (y_label(i) == t) then
         !$omp atomic update
-        correct = correct + 1
+        correct(1) = correct(1) + 1
       end if
 
       accum = exp(-real(y_label(i), real32) * xp)

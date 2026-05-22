@@ -96,8 +96,8 @@ contains
     integer :: i, j
     real(real64) :: start_time
 
-    start_time = omp_get_wtime()
     !$omp target data map(from: data(1:image_size))
+    start_time = omp_get_wtime()
     !$omp target teams distribute parallel do simd collapse(2) &
     !$omp& thread_limit(threads_per_block_x * threads_per_block_y)
     do i = 0, row_size - 1
@@ -106,8 +106,8 @@ contains
       end do
     end do
     !$omp end target teams distribute parallel do simd
-    !$omp end target data
     evaluate_parallel = omp_get_wtime() - start_time
+    !$omp end target data
   end function evaluate_parallel
 
   subroutine verify_parallel(parallel_data, serial_data)

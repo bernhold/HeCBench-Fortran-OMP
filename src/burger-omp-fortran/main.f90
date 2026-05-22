@@ -9,6 +9,7 @@ program burger
   real(real64) :: x_len, y_len, del_x, del_y, nu, sigma, del_t
   integer :: i, j, itr, n
   real(real64) :: start_time, end_time
+  character(len=32) :: time_text
   logical :: ok
 
   argc = command_argument_count()
@@ -61,7 +62,9 @@ program burger
     end do
 
     end_time = omp_get_wtime()
-    print '(A,F0.6,A)', 'Total kernel execution time ', end_time - start_time, ' (s)'
+    write(time_text, '(F0.6)') end_time - start_time
+    if (time_text(1:1) == '.') time_text = '0' // trim(time_text)
+    print '(A,A,A)', 'Total kernel execution time ', trim(time_text), ' (s)'
   !$omp end target data
 
   d_u = u
@@ -125,7 +128,7 @@ contains
     real(real64), intent(inout) :: u(:), v(:), u_new(:), v_new(:)
     integer :: i, j, p
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(i,j,p)
+    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(i,j,p) nowait
     do i = 1, y_points - 2
       do j = 1, x_points - 2
         p = idx(i, j, x_points)
@@ -152,7 +155,7 @@ contains
     real(real64), intent(inout) :: u_new(:), v_new(:)
     integer :: i, j
 
-    !$omp target teams distribute parallel do thread_limit(256) private(i)
+    !$omp target teams distribute parallel do thread_limit(256) private(i) nowait
     do i = 0, x_points - 1
       u_new(idx(0, i, x_points)) = 1.0_real64
       v_new(idx(0, i, x_points)) = 1.0_real64
@@ -161,7 +164,7 @@ contains
     end do
     !$omp end target teams distribute parallel do
 
-    !$omp target teams distribute parallel do thread_limit(256) private(j)
+    !$omp target teams distribute parallel do thread_limit(256) private(j) nowait
     do j = 0, y_points - 1
       u_new(idx(j, 0, x_points)) = 1.0_real64
       v_new(idx(j, 0, x_points)) = 1.0_real64

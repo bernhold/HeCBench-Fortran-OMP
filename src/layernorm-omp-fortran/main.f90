@@ -24,6 +24,7 @@ program main
   real(real32), allocatable :: out(:), d_out(:), mean(:), d_mean(:), rstd(:), d_rstd(:)
   real(real32), allocatable :: inp(:), weight(:), bias(:)
   real(real64) :: start_time, elapsed_ms, bandwidth
+  character(len=32) :: elapsed_text, bandwidth_text
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 4) then
@@ -73,8 +74,10 @@ program main
     elapsed_ms = (omp_get_wtime() - start_time) * 1.0e3_real64 / real(repeat, real64)
     memory_ops = 2_int64 * n_btc * 4_int64
     bandwidth = real(memory_ops, real64) / elapsed_ms / 1.0e6_real64
-    write(*,'(A,I4,A,F0.4,A,F0.2,A)') 'block_size ', block_size, ' | time ', elapsed_ms, &
-      ' ms | bandwidth ', bandwidth, ' GB/s'
+    write(elapsed_text, '(F16.4)') elapsed_ms
+    write(bandwidth_text, '(F16.2)') bandwidth
+    write(*,'(A,I4,A,A,A,A,A)') 'block_size ', block_size, ' | time ', trim(adjustl(elapsed_text)), &
+      ' ms | bandwidth ', trim(adjustl(bandwidth_text)), ' GB/s'
   end do
   !$omp end target data
 
@@ -98,35 +101,40 @@ contains
     integer :: b, t, i, base, row
     real(real32) :: m, v, s, xshift, nval
 
-    !$omp target teams distribute parallel do collapse(2) private(i, base, row, m, v, s, xshift, nval) &
-    !$omp& thread_limit(block_size)
+    !$omp target teams distribute collapse(2) num_teams(bsz * tsz) private(i, base, row, m, v, s, xshift, nval)
     do b = 0, bsz - 1
       do t = 0, tsz - 1
         base = b * tsz * csz + t * csz
         row = b * tsz + t + 1
         m = 0.0_real32
+        !$omp parallel do reduction(+:m) num_threads(block_size)
         do i = 1, csz
           m = m + inp(base + i)
         end do
+        !$omp end parallel do
         m = m / real(csz, real32)
 
         v = 0.0_real32
+        !$omp parallel do private(xshift) reduction(+:v) num_threads(block_size)
         do i = 1, csz
           xshift = inp(base + i) - m
           v = v + xshift * xshift
         end do
+        !$omp end parallel do
         v = v / real(csz, real32)
         s = 1.0_real32 / sqrt(v + eps)
 
+        !$omp parallel do private(nval) num_threads(block_size)
         do i = 1, csz
           nval = s * (inp(base + i) - m)
           out(base + i) = nval * weight(i) + bias(i)
         end do
+        !$omp end parallel do
         mean(row) = m
         rstd(row) = s
       end do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine layernorm_forward_kernel
 
   subroutine run_repeated(out, mean, rstd, inp, weight, bias, bsz, tsz, csz, block_size, repeat)

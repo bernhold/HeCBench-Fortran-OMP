@@ -5,14 +5,11 @@ program main
   implicit none
 
   interface
-    subroutine c_srand(seed) bind(C, name="srand")
+    subroutine s8n_fill_input_cpp(values, input_size) bind(C, name="s8n_fill_input_cpp")
       import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
-
-    integer(c_int) function c_rand() bind(C, name="rand")
-      import :: c_int
-    end function c_rand
+      integer(c_int) :: values(*)
+      integer(c_int), value :: input_size
+    end subroutine s8n_fill_input_cpp
   end interface
 
   integer :: b, n, repeat, input_size, output_size, radius
@@ -99,11 +96,7 @@ contains
 
   subroutine fill_input(values)
     integer, intent(out) :: values(:)
-    integer :: idx
-    call c_srand(123_c_int)
-    do idx = 1, size(values)
-      values(idx) = modulo(int(c_rand()), 512) - 256
-    end do
+    call s8n_fill_input_cpp(values, int(size(values), c_int))
   end subroutine fill_input
 
   subroutine k_cube_select(b, n, radius, xyz_all, out_all)

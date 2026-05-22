@@ -132,8 +132,8 @@ contains
     of1234 = if1234
     of5678 = if5678
 
-    !$omp target data map(to: cell_type(1:n), w(1:9)) &
-    !$omp& map(tofrom: if0(1:n), of0(1:n), if1234(1:4*n), of1234(1:4*n), if5678(1:4*n), of5678(1:4*n))
+    !$omp target data map(to: cell_type(1:n), w(1:9), if0(1:n), of0(1:n), &
+    !$omp& if1234(1:4*n), of1234(1:4*n), if5678(1:4*n), of5678(1:4*n))
     start_time = omp_get_wtime()
     do iter = 1, iterations
       if (mod(iter, 2) == 1) then
@@ -143,10 +143,16 @@ contains
       end if
     end do
     end_time = omp_get_wtime()
-    !$omp end target data
 
     elapsed = (end_time - start_time) / real(iterations, real64)
-    write(*,'(A,F0.6,A)') 'Average kernel execution time ', elapsed, ' (s)'
+    write(*,'(A,F8.6,A)') 'Average kernel execution time ', elapsed, ' (s)'
+
+    if (mod(iterations, 2) == 0) then
+      !$omp target update from(if0(1:n), if1234(1:4*n), if5678(1:4*n))
+    else
+      !$omp target update from(of0(1:n), of1234(1:4*n), of5678(1:4*n))
+    end if
+    !$omp end target data
 
     if (mod(iterations, 2) == 0) then
       of0 = if0

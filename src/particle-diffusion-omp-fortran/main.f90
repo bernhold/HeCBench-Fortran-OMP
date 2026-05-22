@@ -23,7 +23,7 @@ program main
   integer :: n_iterations, n_repeat, random_count, map_size
   integer :: repeat, mismatches
   integer(int64), allocatable :: map(:), map_ref(:)
-  real(real32), allocatable :: random_x(:), random_y(:)
+  real(real32), allocatable :: random_x(:), random_y(:), particle_x(:), particle_y(:)
   real(real64) :: sim_start, sim_end, kernel_total, kernel_start, kernel_end
 
   if (command_argument_count() /= 2) then
@@ -34,20 +34,20 @@ program main
 
   n_iterations = read_arg(1)
   n_repeat = read_arg(2)
-  if (n_iterations <= 0 .or. n_repeat <= 0) then
-    error stop 'particle-diffusion arguments must be positive'
-  end if
 
   random_count = n_particles * n_iterations
   map_size = n_particles * grid_cells
-  allocate(random_x(random_count), random_y(random_count), map(map_size), map_ref(map_size))
+  allocate(random_x(random_count), random_y(random_count), particle_x(n_particles), particle_y(n_particles), &
+           map(map_size), map_ref(map_size))
 
   call initialize_random(random_x, random_y)
+  particle_x = 10.0_real32
+  particle_y = 10.0_real32
   map = 0_int64
   map_ref = 0_int64
 
   sim_start = omp_get_wtime()
-  call motion_device(random_x, random_y, map, n_iterations, n_repeat, kernel_total)
+  call motion_device(particle_x, particle_y, random_x, random_y, map, n_iterations, n_repeat, kernel_total)
   sim_end = omp_get_wtime()
 
   call motion_host(random_x, random_y, map_ref, n_iterations)
@@ -65,7 +65,7 @@ program main
     print '(A)', 'FAIL'
   end if
 
-  deallocate(random_x, random_y, map, map_ref)
+  deallocate(random_x, random_y, particle_x, particle_y, map, map_ref)
 
 contains
 
@@ -86,7 +86,8 @@ contains
     end do
   end subroutine initialize_random
 
-  subroutine motion_device(random_x, random_y, map, n_iterations, n_repeat, kernel_total)
+  subroutine motion_device(particle_x, particle_y, random_x, random_y, map, n_iterations, n_repeat, kernel_total)
+    real(real32), intent(inout) :: particle_x(:), particle_y(:)
     real(real32), intent(in) :: random_x(:), random_y(:)
     integer(int64), intent(inout) :: map(:)
     integer, intent(in) :: n_iterations, n_repeat
@@ -96,20 +97,19 @@ contains
     real(real32) :: px, py, rand_x, rand_y, displacement_x, displacement_y, dx, dy
 
     kernel_total = 0.0_real64
-    !$omp target data map(to: random_x(1:size(random_x)), random_y(1:size(random_y))) map(tofrom: map(1:size(map)))
+    !$omp target data map(to: random_x(1:size(random_x)), random_y(1:size(random_y))) &
+    !$omp& map(alloc: particle_x(1:size(particle_x)), particle_y(1:size(particle_y))) map(from: map(1:size(map)))
     do repeat = 1, n_repeat
-      !$omp target teams distribute parallel do thread_limit(256)
-      do idx = 1, size(map)
-        map(idx) = 0_int64
-      end do
-      !$omp end target teams distribute parallel do
+      !$omp target update to(particle_x(1:size(particle_x)))
+      !$omp target update to(particle_y(1:size(particle_y)))
+      !$omp target update to(map(1:size(map)))
 
       kernel_start = omp_get_wtime()
       !$omp target teams distribute parallel do thread_limit(256) &
       !$omp& private(iter, px, py, rand_x, rand_y, displacement_x, displacement_y, dx, dy, ix, iy, map_base, map_index)
       do particle = 1, n_particles
-        px = 10.0_real32
-        py = 10.0_real32
+        px = particle_x(particle)
+        py = particle_y(particle)
         map_base = (particle - 1) * grid_cells
         do iter = 1, n_iterations
           rand_x = random_x((iter - 1) * n_particles + particle)
@@ -129,6 +129,8 @@ contains
             end if
           end if
         end do
+        particle_x(particle) = px
+        particle_y(particle) = py
       end do
       !$omp end target teams distribute parallel do
       kernel_end = omp_get_wtime()

@@ -20,12 +20,11 @@ program main
   call get_command_argument(2, arg2)
   call get_command_argument(3, arg3)
   call get_command_argument(4, arg4)
-  read(arg1, *) dim_x
-  read(arg2, *) dim_y
-  read(arg3, *) dim_z
-  read(arg4, *) repeat
+  dim_x = atoi_arg(arg1)
+  dim_y = atoi_arg(arg2)
+  dim_z = atoi_arg(arg3)
+  repeat = atoi_arg(arg4)
 
-  if (dim_x <= 0 .or. dim_y <= 0 .or. dim_z <= 0 .or. repeat <= 0) stop 1
   size = dim_x * dim_y * dim_z
 
   allocate(ksat(size), psi(size), c(size), theta(size), k(size))
@@ -62,12 +61,44 @@ program main
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
   deallocate(ksat, psi, c, theta, k, c_ref, theta_ref, k_ref)
 
 contains
+
+  integer function atoi_arg(arg) result(value)
+    character(len=*), intent(in) :: arg
+    integer :: pos, sign, digit, n
+
+    value = 0
+    sign = 1
+    n = len_trim(arg)
+    pos = 1
+
+    do while (pos <= n)
+      if (arg(pos:pos) /= ' ' .and. arg(pos:pos) /= char(9)) exit
+      pos = pos + 1
+    end do
+
+    if (pos <= n) then
+      if (arg(pos:pos) == '-') then
+        sign = -1
+        pos = pos + 1
+      else if (arg(pos:pos) == '+') then
+        pos = pos + 1
+      end if
+    end if
+
+    do while (pos <= n)
+      digit = iachar(arg(pos:pos)) - iachar('0')
+      if (digit < 0 .or. digit > 9) exit
+      value = value * 10 + digit
+      pos = pos + 1
+    end do
+
+    value = sign * value
+  end function atoi_arg
 
   subroutine van_genuchten(ksat, psi, c, theta, k, size)
     real(real64), intent(in) :: ksat(:), psi(:)

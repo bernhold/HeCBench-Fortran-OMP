@@ -1,6 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int8, int32, int64, real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int8_t, c_int64_t
   use omp_lib
   implicit none
 
@@ -34,15 +34,14 @@ program main
     0.84375_real32, 0.90625_real32, 0.96875_real32]
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
-
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine adamw_initialize_inputs_c(vector_size, float_size, g, p, p_ref, m_qscale, v_qscale, &
+        m_qscale_ref, v_qscale_ref, m, v, m_ref, v_ref) bind(C, name='adamw_initialize_inputs')
+      import :: c_float, c_int8_t, c_int64_t
+      integer(c_int64_t), value :: vector_size, float_size
+      real(c_float) :: g(0:*), p(0:*), p_ref(0:*), m_qscale(0:*), v_qscale(0:*)
+      real(c_float) :: m_qscale_ref(0:*), v_qscale_ref(0:*)
+      integer(c_int8_t) :: m(0:*), v(0:*), m_ref(0:*), v_ref(0:*)
+    end subroutine adamw_initialize_inputs_c
   end interface
 
   character(len=256) :: arg0, arg
@@ -54,7 +53,7 @@ program main
   integer(int8), allocatable :: m(:), v(:), m_ref(:), v_ref(:)
   real(real32) :: correction1, correction2_sqrt, step_size
   real(real32) :: absmax_error
-  real(real64) :: start_time, end_time
+  real(real64) :: start_time, end_time, avg_ms
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 2) then
@@ -79,8 +78,8 @@ program main
   call initialize_inputs(vector_size, float_size, g, p, p_ref, m_qscale, v_qscale, &
     m_qscale_ref, v_qscale_ref, m, v, m_ref, v_ref)
 
-  !$omp target data map(to: g(0:float_size - 1)) &
-  !$omp& map(tofrom: p(0:float_size - 1), m_qscale(0:float_size - 1), v_qscale(0:float_size - 1), &
+  !$omp target data map(to: g(0:float_size - 1), p(0:float_size - 1), &
+  !$omp& m_qscale(0:float_size - 1), v_qscale(0:float_size - 1), &
   !$omp& m(0:vector_size - 1), v(0:vector_size - 1))
   do step = 1, time_step
     call step_constants(step, correction1, correction2_sqrt, step_size)
@@ -92,7 +91,11 @@ program main
   !$omp target update from(p(0:float_size - 1))
 
   absmax_error = maxval(abs(p - p_ref))
-  write(*,'(A,F0.6)') 'Absolute maximum error: ', absmax_error
+  if (absmax_error < 10.0_real32) then
+    write(*,'(A,F8.6)') 'Absolute maximum error: ', absmax_error
+  else
+    write(*,'(A,F0.6)') 'Absolute maximum error: ', absmax_error
+  end if
   if (absmax_error > 1.0e-3_real32) then
     write(*,'(A)') 'FAIL'
   else
@@ -106,8 +109,12 @@ program main
       correction2_sqrt, step_size)
   end do
   end_time = omp_get_wtime()
-  write(*,'(A,F0.6,A)') 'Average kernel execution time ', &
-    (end_time - start_time) * 1.0e3_real64 / real(time_step, real64), ' (ms)'
+  avg_ms = (end_time - start_time) * 1.0e3_real64 / real(time_step, real64)
+  if (avg_ms < 10.0_real64) then
+    write(*,'(A,F8.6,A)') 'Average kernel execution time ', avg_ms, ' (ms)'
+  else
+    write(*,'(A,F0.6,A)') 'Average kernel execution time ', avg_ms, ' (ms)'
+  end if
   !$omp end target data
 
   deallocate(g, p, p_ref, m_qscale, v_qscale, m_qscale_ref, v_qscale_ref, m, v, m_ref, v_ref)
@@ -120,33 +127,10 @@ contains
     real(real32), intent(out) :: g(0:), p(0:), p_ref(0:), m_qscale(0:), v_qscale(0:)
     real(real32), intent(out) :: m_qscale_ref(0:), v_qscale_ref(0:)
     integer(int8), intent(out) :: m(0:), v(0:), m_ref(0:), v_ref(0:)
-    integer(int64) :: i
-    integer(int32) :: byte_value
 
-    call c_srand(19937_c_int)
-    do i = 0_int64, float_size - 1_int64
-      m_qscale(i) = c_random_real()
-      v_qscale(i) = c_random_real()
-      g(i) = c_random_real()
-      p(i) = c_random_real()
-      p_ref(i) = p(i)
-      m_qscale_ref(i) = m_qscale(i)
-      v_qscale_ref(i) = v_qscale(i)
-    end do
-
-    do i = 0_int64, vector_size - 1_int64
-      byte_value = min(255_int32, int(256.0_real32 * c_random_real(), int32))
-      m(i) = to_int8(byte_value)
-      m_ref(i) = m(i)
-      byte_value = min(255_int32, int(256.0_real32 * c_random_real(), int32))
-      v(i) = to_int8(byte_value)
-      v_ref(i) = v(i)
-    end do
+    call adamw_initialize_inputs_c(vector_size, float_size, g, p, p_ref, m_qscale, v_qscale, &
+      m_qscale_ref, v_qscale_ref, m, v, m_ref, v_ref)
   end subroutine initialize_inputs
-
-  real(real32) function c_random_real()
-    c_random_real = real(c_rand(), real32) / real(huge(0_c_int), real32)
-  end function c_random_real
 
   pure integer(int8) function to_int8(value)
     integer(int32), intent(in) :: value
@@ -192,11 +176,11 @@ contains
     real(real32) :: mapped_value
 
     num_blocks = (total_size + block_size - 1_int64) / block_size
-    !$omp target teams distribute parallel do thread_limit(256) &
+    !$omp target teams distribute num_teams(num_blocks) &
     !$omp& private(block_id, thread_id, global_id, exp_full, sq_full, exp_left_index, sq_left_index, &
-    !$omp& exp_right_index, sq_right_index, q_exp_left, q_sq_left, q_exp_right, q_sq_right, packed_exp, &
-    !$omp& packed_sq, absmax_exp, absmax_sq, exp_avg_qscale, p_left, p_right, g_left, g_right, exp_left, &
-    !$omp& exp_right, sq_left, sq_right, local_exp_left, local_exp_right, local_sq_left, local_sq_right, &
+    !$omp& exp_right_index, sq_right_index, q_exp_left, q_sq_left, q_exp_right, packed_exp, packed_sq, &
+    !$omp& absmax_exp, absmax_sq, exp_avg_qscale, p_left, p_right, g_left, g_right, exp_left, exp_right, &
+    !$omp& sq_left, sq_right, local_exp_left, local_exp_right, local_sq_left, local_sq_right, &
     !$omp& low, high, mid, mapped_value)
     do block_id = 0_int64, num_blocks - 1_int64
       absmax_exp = 0.0_real32
@@ -206,6 +190,10 @@ contains
       local_sq_left = 0.0_real32
       local_sq_right = 0.0_real32
 
+      !$omp parallel do reduction(max:absmax_sq, absmax_exp) num_threads(block_size) &
+      !$omp& private(thread_id, global_id, exp_full, sq_full, exp_left_index, sq_left_index, &
+      !$omp& exp_right_index, sq_right_index, exp_avg_qscale, p_left, p_right, g_left, g_right, &
+      !$omp& exp_left, exp_right, sq_left, sq_right)
       do thread_id = 0, block_size - 1
         global_id = block_id * block_size + int(thread_id, int64)
         if (global_id < total_size) then
@@ -242,10 +230,14 @@ contains
           absmax_sq = max(absmax_sq, max(sq_left, sq_right))
         end if
       end do
+      !$omp end parallel do
 
       exp_qscale(block_id) = absmax_exp
       sq_qscale(block_id) = absmax_sq
 
+      !$omp parallel do num_threads(block_size) &
+      !$omp& private(thread_id, global_id, q_exp_left, q_sq_left, q_exp_right, q_sq_right, &
+      !$omp& packed_exp, packed_sq, low, high, mid, mapped_value)
       do thread_id = 0, block_size - 1
         global_id = block_id * block_size + int(thread_id, int64)
         if (global_id < total_size) then
@@ -264,8 +256,9 @@ contains
           sq_state(global_id) = to_int8(packed_sq)
         end if
       end do
+      !$omp end parallel do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine fused_4bit_kernel
 
   subroutine reference_kernel(p, g, exp_qscale, sq_qscale, exp_state, sq_state, total_size, &

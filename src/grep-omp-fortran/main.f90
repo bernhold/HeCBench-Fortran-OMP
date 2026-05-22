@@ -330,10 +330,11 @@ contains
     ok = .true.
   end function pre2post_host
 
-  subroutine read_file_bytes(file_name, bytes, table, num_lines, file_len)
+  subroutine read_file_bytes(file_name, bytes, table, num_lines, file_len, end_read_file)
     character(len=*), intent(in) :: file_name
     integer, allocatable, intent(out) :: bytes(:), table(:)
     integer, intent(out) :: num_lines, file_len
+    real(real64), intent(out) :: end_read_file
     character(len=:), allocatable :: text
     integer :: unit, stat, i
     integer(int64) :: fsize
@@ -345,6 +346,7 @@ contains
       table = 0
       num_lines = 0
       file_len = 0
+      end_read_file = omp_get_wtime()
       return
     end if
     file_len = int(fsize)
@@ -353,6 +355,7 @@ contains
     if (stat /= 0) stop 'Error opening file'
     if (file_len > 0) read(unit) text
     close(unit)
+    end_read_file = omp_get_wtime()
 
     allocate(bytes(0:file_len))
     allocate(table(0:max(0, file_len)))
@@ -749,6 +752,59 @@ contains
     end do
   end subroutine add_state_device
 
+  subroutine visualize_nfa(post)
+    integer, intent(in) :: post(:)
+    integer :: state_c(0:max_states), state_out(0:max_states), state_out1(0:max_states)
+    integer :: count(0:max_states), nstate, start_state
+
+    state_c = 0
+    state_out = 0
+    state_out1 = 0
+    count = 0
+    call post2nfa_device(post, state_c, state_out, state_out1, nstate, start_state)
+    write(*, '(a)', advance='no') '['
+    call visualize_nfa_help(start_state, state_c, state_out, state_out1, count)
+    write(*, '(a)') ']'
+  end subroutine visualize_nfa
+
+  recursive subroutine visualize_nfa_help(start, state_c, state_out, state_out1, count)
+    integer, intent(in) :: start
+    integer, intent(in) :: state_c(0:), state_out(0:), state_out1(0:)
+    integer, intent(inout) :: count(0:)
+    integer :: out_id, out1_id
+    character(len=16) :: data
+
+    if (start < 0 .or. start > max_states) return
+    if (count(start) > 0) return
+    count(start) = count(start) + 1
+
+    select case (state_c(start))
+    case (match_state)
+      data = 'Match'
+      out_id = -1
+      out1_id = -1
+    case (split_state)
+      data = 'Split'
+      out_id = state_out(start)
+      out1_id = state_out1(start)
+    case (any_state)
+      data = 'Any'
+      out_id = state_out(start)
+      out1_id = -1
+    case default
+      data = 'Char '//achar(iand(state_c(start), 255))
+      out_id = state_out(start)
+      out1_id = -1
+    end select
+
+    write(*, '("{ ""id"": """, i0, """, ""data"":""", a, """, ""out"":""", i0, """, ""out1"":""", i0, """ ")') &
+        start, trim(data), out_id, out1_id
+    write(*, '(a)', advance='no') '},'
+
+    call visualize_nfa_help(state_out(start), state_c, state_out, state_out1, count)
+    call visualize_nfa_help(state_out1(start), state_c, state_out, state_out1, count)
+  end subroutine visualize_nfa_help
+
 end module grep_port
 
 program main
@@ -782,7 +838,7 @@ program main
     stop
   end if
   if (visualize) then
-    print '(a)', '[]'
+    call visualize_nfa(post)
     stop
   end if
 
@@ -792,8 +848,7 @@ program main
   end if
 
   start_time = omp_get_wtime()
-  call read_file_bytes(file_name, line_data, table, num_lines, file_len)
-  end_read_file = omp_get_wtime()
+  call read_file_bytes(file_name, line_data, table, num_lines, file_len, end_read_file)
 
   allocate(result(0:max(0, num_lines - 1)))
   result = 0
@@ -810,17 +865,29 @@ program main
   end_time = omp_get_wtime()
   if (timer_on) then
     print '(a,f0.4,1x)', ''
-    write(*, '(a,f0.4,1x)') 'ReadFile time ', end_read_file - start_time
+    call print_timing('ReadFile time ', end_read_file - start_time)
     print '(a)'
-    write(*, '(a,f0.4,1x)') 'Device setup time ', end_setup - end_read_file
+    call print_timing('Device setup time ', end_setup - end_read_file)
     print '(a)'
-    write(*, '(a,f0.4,1x)') 'Kernel execution Time ', end_kernel - end_setup
+    call print_timing('Kernel execution Time ', end_kernel - end_setup)
     print '(a)'
-    write(*, '(a,f0.4,1x)') 'Total time ', end_time - start_time
+    call print_timing('Total time ', end_time - start_time)
     print '(a)'
   end if
 
 contains
+
+  subroutine print_timing(label, value)
+    character(len=*), intent(in) :: label
+    real(real64), intent(in) :: value
+    character(len=64) :: text
+
+    write(text, '(f0.4)') value
+    text = adjustl(text)
+    if (text(1:1) == '.') text = '0'//trim(text)
+    if (len_trim(text) >= 2 .and. text(1:2) == '-.') text = '-0'//trim(text(2:))
+    write(*, '(a,a," ")') label, trim(text)
+  end subroutine print_timing
 
   subroutine print_line(bytes, offset)
     integer, intent(in) :: bytes(0:), offset

@@ -1,4 +1,5 @@
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  ?= yes
 DEBUG     ?= no
 DEVICE    ?= gpu
@@ -7,16 +8,20 @@ LAUNCHER  ?=
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+cxx_source = depixel_rng.cpp
+obj     = $(source:.f90=.o) $(cxx_source:.cpp=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
+CXXFLAGS := $(EXTRA_CXXFLAGS) -Wall
 
 ifeq ($(DEBUG),yes)
   FFLAGS += -g
+  CXXFLAGS += -g
 endif
 
 ifeq ($(OPTIMIZE),yes)
   FFLAGS += -O3
+  CXXFLAGS += -O3
 endif
 
 ifeq ($(DEVICE),gpu)
@@ -25,7 +30,7 @@ else
   FFLAGS += -fopenmp
 endif
 
-LDFLAGS =
+LDFLAGS = -lstdc++
 BENCHMARK_ARGS ?= 2048 2048 10
 
 $(program): $(obj)
@@ -33,6 +38,9 @@ $(program): $(obj)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj) *.mod

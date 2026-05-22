@@ -68,9 +68,10 @@ contains
     allocate(a(array_size), b(array_size), c(array_size))
     print '(A,I0,A)', 'Running kernels ', num_times, ' times'
     print '(A)', 'Precision: float'
-    write(*, '(A,F0.1,A,F0.1,A)') 'Array size: ', array_size * 4.0e-6_real64, ' MB (= ', array_size * 4.0e-9_real64, ' GB)'
-    write(*, '(A,F0.1,A,F0.1,A)') 'Total size: ', 3.0_real64 * array_size * 4.0e-6_real64, ' MB (= ', &
-      3.0_real64 * array_size * 4.0e-9_real64, ' GB)'
+    write(*, '(5A)') 'Array size: ', trim(lead_zero(array_size * 4.0e-6_real64, 1)), ' MB (=', &
+      trim(lead_zero(array_size * 4.0e-9_real64, 1)), ' GB)'
+    write(*, '(5A)') 'Total size: ', trim(lead_zero(3.0_real64 * array_size * 4.0e-6_real64, 1)), ' MB (=', &
+      trim(lead_zero(3.0_real64 * array_size * 4.0e-9_real64, 1)), ' GB)'
     !$omp target data map(alloc: a(1:array_size), b(1:array_size), c(1:array_size))
       call init_float(a, b, c, array_size)
       do k = 1, num_times
@@ -81,8 +82,8 @@ contains
         timings(5, k) = time_dot_float(a, b, array_size)
         timings(6, k) = time_nstream_float(a, b, c, array_size)
       end do
+      call print_table(timings, num_times, array_size, 4)
     !$omp end target data
-    call print_table(timings, num_times, array_size, 4)
     deallocate(a, b, c)
   end subroutine run_float
 
@@ -95,9 +96,10 @@ contains
     allocate(a(array_size), b(array_size), c(array_size))
     print '(A,I0,A)', 'Running kernels ', num_times, ' times'
     print '(A)', 'Precision: double'
-    write(*, '(A,F0.1,A,F0.1,A)') 'Array size: ', array_size * 8.0e-6_real64, ' MB (= ', array_size * 8.0e-9_real64, ' GB)'
-    write(*, '(A,F0.1,A,F0.1,A)') 'Total size: ', 3.0_real64 * array_size * 8.0e-6_real64, ' MB (= ', &
-      3.0_real64 * array_size * 8.0e-9_real64, ' GB)'
+    write(*, '(5A)') 'Array size: ', trim(lead_zero(array_size * 8.0e-6_real64, 1)), ' MB (=', &
+      trim(lead_zero(array_size * 8.0e-9_real64, 1)), ' GB)'
+    write(*, '(5A)') 'Total size: ', trim(lead_zero(3.0_real64 * array_size * 8.0e-6_real64, 1)), ' MB (=', &
+      trim(lead_zero(3.0_real64 * array_size * 8.0e-9_real64, 1)), ' GB)'
     !$omp target data map(alloc: a(1:array_size), b(1:array_size), c(1:array_size))
       call init_double(a, b, c, array_size)
       do k = 1, num_times
@@ -108,8 +110,8 @@ contains
         timings(5, k) = time_dot_double(a, b, array_size)
         timings(6, k) = time_nstream_double(a, b, c, array_size)
       end do
+      call print_table(timings, num_times, array_size, 8)
     !$omp end target data
-    call print_table(timings, num_times, array_size, 8)
     deallocate(a, b, c)
   end subroutine run_double
 
@@ -327,6 +329,7 @@ contains
     integer, parameter :: factors(6) = [2, 2, 3, 3, 2, 4]
     integer :: i
     real(real64) :: min_t, max_t, avg_t, bandwidth
+    character(len=12) :: label_field, bandwidth_field, min_field, max_field, avg_field
     print '(A)', 'Function    MBytes/sec  Min (sec)   Max         Average     '
     do i = 1, 6
       min_t = minval(timings(i, 2:num_times))
@@ -334,9 +337,44 @@ contains
       avg_t = sum(timings(i, 2:num_times)) / real(num_times - 1, real64)
       bandwidth = 1.0e-6_real64 * real(factors(i), real64) * &
         real(bytes_per_value, real64) * real(array_size, real64) / min_t
-      write(*, '(A,4(ES12.5))') labels(i), bandwidth, min_t, max_t, avg_t
+      call fixed_field(bandwidth, 3, bandwidth_field)
+      call fixed_field(min_t, 5, min_field)
+      call fixed_field(max_t, 5, max_field)
+      call fixed_field(avg_t, 5, avg_field)
+      label_field = adjustl(labels(i))
+      write(*, '(5A)') label_field, bandwidth_field, min_field, max_field, avg_field
     end do
     print *
   end subroutine print_table
+
+  subroutine fixed_field(value, digits, field)
+    real(real64), intent(in) :: value
+    integer, intent(in) :: digits
+    character(len=12), intent(out) :: field
+
+    field = adjustl(lead_zero(value, digits))
+  end subroutine fixed_field
+
+  character(len=32) function lead_zero(value, digits)
+    real(real64), intent(in) :: value
+    integer, intent(in) :: digits
+    character(len=32) :: buffer
+
+    select case (digits)
+    case (1)
+      write(buffer, '(F0.1)') value
+    case (3)
+      write(buffer, '(F0.3)') value
+    case default
+      write(buffer, '(F0.5)') value
+    end select
+    if (buffer(1:1) == '.') then
+      lead_zero = '0' // trim(buffer)
+    else if (buffer(1:2) == '-.') then
+      lead_zero = '-0' // trim(buffer(2:))
+    else
+      lead_zero = trim(buffer)
+    end if
+  end function lead_zero
 
 end program main

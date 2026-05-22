@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_char, c_int, c_null_char
   use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
@@ -14,6 +14,12 @@ program main
       import :: c_int
       integer(c_int) :: value
     end function c_rand
+
+    function c_atoi(str) bind(C, name="atoi") result(value)
+      import :: c_char, c_int
+      character(kind=c_char), intent(in) :: str(*)
+      integer(c_int) :: value
+    end function c_atoi
   end interface
 
   integer, parameter :: blocks = 256
@@ -35,10 +41,9 @@ program main
   call get_command_argument(1, arg1)
   call get_command_argument(2, arg2)
   call get_command_argument(3, arg3)
-  read(arg1, *) m
-  read(arg2, *) n
-  read(arg3, *) repeat
-  if (m <= 0 .or. n < m .or. repeat <= 0) stop 1
+  m = c_atoi(trim(arg1) // c_null_char)
+  n = c_atoi(trim(arg2) // c_null_char)
+  repeat = c_atoi(trim(arg3) // c_null_char)
 
   out_len = n - m + 1
   grids = (out_len + blocks - 1) / blocks

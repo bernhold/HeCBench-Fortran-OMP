@@ -1,27 +1,33 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_fortran_env, only : int16, int32, int64, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_int, c_int16_t, c_int32_t
   use omp_lib
   implicit none
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
+    subroutine relu_rng_init(seed) bind(C, name='relu_rng_init')
       import :: c_int
       integer(c_int), value :: seed
-    end subroutine c_srand
+    end subroutine relu_rng_init
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine relu_fill_gradient_feature(count, gradient, feature) bind(C, name='relu_fill_gradient_feature')
+      import :: c_int, c_int16_t
+      integer(c_int), value :: count
+      integer(c_int16_t) :: gradient(*), feature(*)
+    end subroutine relu_fill_gradient_feature
+
+    subroutine relu_fill_int_inputs(count, input) bind(C, name='relu_fill_int_inputs')
+      import :: c_int, c_int32_t
+      integer(c_int), value :: count
+      integer(c_int32_t) :: input(*)
+    end subroutine relu_fill_int_inputs
   end interface
 
   character(len=256) :: arg0
-  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer, parameter :: n_vec = 4
   integer, parameter :: vec_len(n_vec) = [1, 2, 4, 8]
   integer :: count, repeat, vl, iv, i
-  real(real32), allocatable :: h_gradient(:), h_feature(:), h_backprop(:), r_backprop(:)
+  integer(c_int16_t), allocatable :: h_gradient(:), h_feature(:), h_backprop(:), r_backprop(:)
   integer(int32), allocatable :: h_in(:), h_out(:), r_out(:)
   real(real64) :: start_time, end_time, avg_us
   logical :: ok
@@ -38,11 +44,8 @@ program main
 
   allocate(h_gradient(count), h_feature(count), h_backprop(count), r_backprop(count))
 
-  call c_srand(19937_c_int)
-  do i = 1, count
-    h_feature(i) = c_signed_unit_float()
-    h_gradient(i) = 1.0_real32
-  end do
+  call relu_rng_init(19937_c_int)
+  call relu_fill_gradient_feature(count, h_gradient, h_feature)
 
   call relu_grad_reference(count, h_gradient, h_feature, r_backprop)
 
@@ -60,7 +63,7 @@ program main
     !$omp target update from(h_backprop(1:count))
     ok = .true.
     do i = 1, count
-      if (abs(h_backprop(i) - r_backprop(i)) > 1.0e-3_real32) then
+      if (abs(half_to_real(h_backprop(i)) - half_to_real(r_backprop(i))) > 1.0e-3_real32) then
         ok = .false.
         exit
       end if
@@ -72,9 +75,7 @@ program main
   deallocate(h_gradient, h_feature, h_backprop, r_backprop)
 
   allocate(h_in(count), h_out(count), r_out(count))
-  do i = 1, count
-    h_in(i) = make_packed_input()
-  end do
+  call relu_fill_int_inputs(count, h_in)
 
   call relu_reference(count, h_in, r_out)
 
@@ -124,22 +125,25 @@ contains
     end if
   end subroutine print_status
 
-  real(real32) function c_signed_unit_float()
-    integer(c_int) :: value
+  real(real32) function half_to_real(value)
+    integer(c_int16_t), intent(in) :: value
+    integer(int32) :: bits, sign_bit, exponent, fraction
 
-    value = c_rand()
-    c_signed_unit_float = 2.0_real32 * (real(value, real32) / real(c_rand_max, real32)) - 1.0_real32
-  end function c_signed_unit_float
+    bits = iand(int(value, int32), int(z'0000FFFF', int32))
+    sign_bit = iand(bits, int(z'00008000', int32))
+    exponent = iand(ishft(bits, -10), int(z'0000001F', int32))
+    fraction = iand(bits, int(z'000003FF', int32))
 
-  integer(int32) function make_packed_input()
-    integer(int32) :: b0, b1, b2, b3
+    if (exponent == 0_int32) then
+      half_to_real = scale(real(fraction, real32) / 1024.0_real32, -14)
+    else if (exponent == 31_int32) then
+      half_to_real = huge(half_to_real)
+    else
+      half_to_real = scale(1.0_real32 + real(fraction, real32) / 1024.0_real32, exponent - 15)
+    end if
 
-    b0 = int(mod(c_rand(), 256_c_int), int32)
-    b1 = int(mod(c_rand(), 256_c_int), int32)
-    b2 = int(mod(c_rand(), 256_c_int), int32)
-    b3 = int(mod(c_rand(), 256_c_int), int32)
-    make_packed_input = ior(ior(b0, ishft(b1, 8)), ior(ishft(b2, 16), ishft(b3, 24)))
-  end function make_packed_input
+    if (sign_bit /= 0_int32) half_to_real = -half_to_real
+  end function half_to_real
 
   integer(int32) function relu_byte(byte_value)
     integer(int32), intent(in) :: byte_value
@@ -156,34 +160,37 @@ contains
 
   subroutine relu_grad_reference(count, gradient, feature, backprop)
     integer, intent(in) :: count
-    real(real32), intent(in) :: gradient(:), feature(:)
-    real(real32), intent(out) :: backprop(:)
+    integer(c_int16_t), intent(in) :: gradient(:), feature(:)
+    integer(c_int16_t), intent(out) :: backprop(:)
     integer :: i
 
     do i = 1, count
-      if (feature(i) > 0.0_real32) then
+      if (half_to_real(feature(i)) > 0.0_real32) then
         backprop(i) = gradient(i)
       else
-        backprop(i) = 0.0_real32
+        backprop(i) = 0_c_int16_t
       end if
     end do
   end subroutine relu_grad_reference
 
   subroutine relu_grad_device(gradient, feature, backprop, count, vl)
-    real(real32), intent(in) :: gradient(:), feature(:)
-    real(real32), intent(out) :: backprop(:)
+    integer(c_int16_t), intent(in) :: gradient(:), feature(:)
+    integer(c_int16_t), intent(out) :: backprop(:)
     integer, intent(in) :: count, vl
     integer :: v_count, index, j, base
+    real(real32) :: g, f
 
     v_count = count / vl
-    !$omp target teams distribute parallel do thread_limit(256) private(j, base)
+    !$omp target teams distribute parallel do thread_limit(256) private(j, base, g, f)
     do index = 0, v_count - 1
       base = index * vl
       do j = 1, vl
-        if (feature(base + j) > 0.0_real32) then
+        g = half_to_real(gradient(base + j))
+        f = half_to_real(feature(base + j))
+        if (f > 0.0_real32) then
           backprop(base + j) = gradient(base + j)
         else
-          backprop(base + j) = 0.0_real32
+          backprop(base + j) = 0_c_int16_t
         end if
       end do
     end do

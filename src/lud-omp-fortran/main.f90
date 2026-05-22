@@ -33,12 +33,9 @@ program main
 
   print '(A,I0,A,I0)', 'WG size of kernel = ', block_size, ' X ', block_size
   start_total = omp_get_wtime()
-  start_kernel = omp_get_wtime()
   call lud_offload(m, matrix_dim)
-  end_kernel = omp_get_wtime()
-  write(*, '(A,F0.6,A)') 'Total kernel execution time : ', end_kernel - start_kernel, ' (s)'
   end_total = omp_get_wtime()
-  write(*, '(A,F0.6)') 'Device offloading time (s): ', end_total - start_total
+  write(*, '(A,F8.6)') 'Device offloading time (s): ', end_total - start_total
 
   if (do_verify) then
     print '(A)', 'After LUD'
@@ -166,6 +163,7 @@ contains
     integer :: offset, tile_count
 
     !$omp target data map(tofrom: m(1:n*n))
+      start_kernel = omp_get_wtime()
       offset = 0
       do while (offset < n - block_size)
         call diagonal_kernel(m, n, offset)
@@ -175,6 +173,8 @@ contains
         offset = offset + block_size
       end do
       call diagonal_kernel(m, n, offset)
+      end_kernel = omp_get_wtime()
+      write(*, '(A,F8.6,A)') 'Total kernel execution time : ', end_kernel - start_kernel, ' (s)'
     !$omp end target data
   end subroutine lud_offload
 

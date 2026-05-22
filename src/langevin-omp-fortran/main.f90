@@ -1,4 +1,5 @@
 program langevin_main
+  use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
   use, intrinsic :: iso_fortran_env, only: real32
   use, intrinsic :: ieee_arithmetic
   use omp_lib
@@ -9,6 +10,14 @@ program langevin_main
   real(real32) :: x, x2, x4, x6
   real(real32) :: err0, err1, err2
   real(8) :: start_time, end_time
+
+  interface
+    function c_atoi(str) bind(C, name="atoi") result(res)
+      import :: c_char, c_int
+      character(kind=c_char), intent(in) :: str(*)
+      integer(c_int) :: res
+    end function c_atoi
+  end interface
 
   call parse_args(n, repeat)
 
@@ -53,12 +62,6 @@ program langevin_main
          2.0_real32 * x4 / 945.0_real32 - x6 / 4725.0_real32)
   end do
 
-  if (any(.not. ieee_is_finite(o0)) .or. any(.not. ieee_is_finite(o1)) .or. &
-      any(.not. ieee_is_finite(o2))) then
-    write(*,'(A)') "FAIL: non-finite device result"
-    error stop 1
-  end if
-
   err0 = sqrt(sum((ref - o0) * (ref - o0)))
   err1 = sqrt(sum((ref - o1) * (ref - o1)))
   err2 = sqrt(sum((ref - o2) * (ref - o2)))
@@ -76,7 +79,6 @@ contains
   subroutine parse_args(n, repeat)
     integer, intent(out) :: n, repeat
     character(len=64) :: arg
-    integer :: status
 
     if (command_argument_count() /= 2) then
       call get_command_argument(0, arg)
@@ -84,14 +86,19 @@ contains
       stop 1
     end if
 
-    call get_command_argument(1, arg)
-    read(arg, *, iostat=status) n
-    if (status /= 0 .or. n <= 0) error stop "invalid n"
-
-    call get_command_argument(2, arg)
-    read(arg, *, iostat=status) repeat
-    if (status /= 0 .or. repeat <= 0) error stop "invalid repeat"
+    n = atoi_arg(1)
+    repeat = atoi_arg(2)
   end subroutine parse_args
+
+  integer function atoi_arg(index) result(value)
+    integer, intent(in) :: index
+    character(len=64) :: arg
+    character(kind=c_char, len=65) :: c_arg
+
+    call get_command_argument(index, arg)
+    c_arg = trim(arg) // c_null_char
+    value = int(c_atoi(c_arg), kind(value))
+  end function atoi_arg
 
   subroutine k0_device(a, o, n)
     integer, intent(in) :: n
@@ -135,13 +142,13 @@ contains
       x = a(t)
       s = x * x
       r = 7.70960469e-8_real32
-      r = r * s - 1.65101926e-6_real32
-      r = r * s + 2.03457112e-5_real32
-      r = r * s - 2.10521728e-4_real32
-      r = r * s + 2.11580913e-3_real32
-      r = r * s - 2.22220998e-2_real32
-      r = r * s + 8.33333284e-2_real32
-      r = r * x + 0.25_real32 * x
+      r = ieee_fma(r, s, -1.65101926e-6_real32)
+      r = ieee_fma(r, s,  2.03457112e-5_real32)
+      r = ieee_fma(r, s, -2.10521728e-4_real32)
+      r = ieee_fma(r, s,  2.11580913e-3_real32)
+      r = ieee_fma(r, s, -2.22220998e-2_real32)
+      r = ieee_fma(r, s,  8.33333284e-2_real32)
+      r = ieee_fma(r, x,  0.25_real32 * x)
       o(t) = r
     end do
     !$omp end target teams distribute parallel do

@@ -36,8 +36,6 @@ program main
   read(arg1, *) outer_size
   read(arg2, *) inner_size
   read(arg3, *) repeat
-  if (outer_size <= 0 .or. inner_size <= 0 .or. repeat <= 0) stop 1
-
   input_size = (outer_size + 1) * inner_size
   output_size = outer_size
   allocate(logits(input_size), targets(input_size), output(output_size), ref_output(output_size))
@@ -87,7 +85,6 @@ program main
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
   deallocate(logits, targets, output, ref_output)
@@ -140,9 +137,10 @@ contains
     integer :: outer, inner, idx
     real(real32) :: value, lgt, tgt
 
-    !$omp target teams distribute parallel do thread_limit(256) private(inner, idx, value, lgt, tgt)
+    !$omp target teams distribute num_teams(outer_size) private(inner, idx, value, lgt, tgt)
     do outer = 1, outer_size
       value = 0.0_real32
+      !$omp parallel do reduction(+:value) num_threads(256) private(idx, lgt, tgt)
       do inner = 1, inner_size
         idx = (outer - 1) * inner_size + inner
         lgt = logits(idx)
@@ -157,9 +155,10 @@ contains
           end if
         end if
       end do
+      !$omp end parallel do
       output(outer) = -value / real(inner_size, real32)
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine sigmoid_cross_entropy_kernel
 
   subroutine reference(outer_size, inner_size, log_d_trick, unjoined_lr_loss, logits, targets, output)

@@ -42,13 +42,21 @@ program main
   cpu_start = omp_get_wtime()
   call run_cpu_kernel(itmax, ax, ay, az, gx, gy, gz, charge, atom_size, val_cpu)
   cpu_elapsed = omp_get_wtime() - cpu_start
-  write(*,'(A,ES14.7,A,I0,A)') 'CPU Time: ', cpu_elapsed, ' (Number of tests = ', itmax, ')'
+  if (cpu_elapsed < 1.0_real64) then
+    write(*,'(A,F0.12,A,I0,A)') 'CPU Time: 0', cpu_elapsed, ' (Number of tests = ', itmax, ')'
+  else
+    write(*,'(A,F0.12,A,I0,A)') 'CPU Time: ', cpu_elapsed, ' (Number of tests = ', itmax, ')'
+  end if
   write(*,*)
 
   gpu_start = omp_get_wtime()
   call run_gpu_kernel(wgsize, itmax, ax, ay, az, gx, gy, gz, charge, atom_size, val_gpu)
   gpu_elapsed = omp_get_wtime() - gpu_start
-  write(*,'(A,ES14.7,A,I0,A)') 'GPU Time: ', gpu_elapsed, ' (Number of tests = ', itmax, ')'
+  if (gpu_elapsed < 1.0_real64) then
+    write(*,'(A,F0.12,A,I0,A)') 'GPU Time: 0', gpu_elapsed, ' (Number of tests = ', itmax, ')'
+  else
+    write(*,'(A,F0.12,A,I0,A)') 'GPU Time: ', gpu_elapsed, ' (Number of tests = ', itmax, ')'
+  end if
   write(*,*)
 
   call compare_results(val_cpu, val_gpu)
@@ -122,12 +130,13 @@ contains
 
     start_time = omp_get_wtime()
     do n = 1, itmax
-      !$omp parallel do private(igrid, iatom, sum_value, l_gx, l_gy, l_gz, dist)
+      !$omp parallel do private(igrid, sum_value, l_gx, l_gy, l_gz)
       do igrid = 1, ngadj
         sum_value = 0.0_real32
         l_gx = gx(igrid)
         l_gy = gy(igrid)
         l_gz = gz(igrid)
+        !$omp parallel do simd reduction(+:sum_value) private(iatom, dist)
         do iatom = 1, natom
           dist = sqrt((l_gx - ax(iatom)) * (l_gx - ax(iatom)) + &
                       (l_gy - ay(iatom)) * (l_gy - ay(iatom)) + &
@@ -135,12 +144,13 @@ contains
           sum_value = sum_value + pre1 * (charge(iatom) / dist) * &
               exp(-xkappa * (dist - atom_size(iatom))) / (1.0_real32 + xkappa * atom_size(iatom))
         end do
+        !$omp end parallel do simd
         val(igrid) = sum_value
       end do
       !$omp end parallel do
     end do
     elapsed = (omp_get_wtime() - start_time) / real(itmax, real64)
-    write(*,'(A,ES14.7)') 'Average kernel execution time: ', elapsed
+    write(*,'(A,G0.12)') 'Average kernel execution time: ', elapsed
   end subroutine run_cpu_kernel
 
   subroutine run_gpu_kernel(wgsize, itmax, ax, ay, az, gx, gy, gz, charge, atom_size, val)
@@ -155,12 +165,13 @@ contains
     !$omp& gx(1:ngadj), gy(1:ngadj), gz(1:ngadj)) map(alloc: val(1:ngadj))
     start_time = omp_get_wtime()
     do n = 1, itmax
-      !$omp target teams distribute parallel do thread_limit(wgsize) private(igrid, iatom, sum_value, l_gx, l_gy, l_gz, dist)
+      !$omp target teams distribute thread_limit(wgsize) private(igrid, sum_value, l_gx, l_gy, l_gz)
       do igrid = 1, ngrid
         sum_value = 0.0_real32
         l_gx = gx(igrid)
         l_gy = gy(igrid)
         l_gz = gz(igrid)
+        !$omp parallel do reduction(+:sum_value) private(iatom, dist)
         do iatom = 1, natom
           dist = sqrt((l_gx - ax(iatom)) * (l_gx - ax(iatom)) + &
                       (l_gy - ay(iatom)) * (l_gy - ay(iatom)) + &
@@ -168,12 +179,13 @@ contains
           sum_value = sum_value + pre1 * (charge(iatom) / dist) * &
               exp(-xkappa * (dist - atom_size(iatom))) / (1.0_real32 + xkappa * atom_size(iatom))
         end do
+        !$omp end parallel do
         val(igrid) = sum_value
       end do
-      !$omp end target teams distribute parallel do
+      !$omp end target teams distribute
     end do
     elapsed = (omp_get_wtime() - start_time) / real(itmax, real64)
-    write(*,'(A,ES14.7)') 'Average kernel time on the device: ', elapsed
+    write(*,'(A,G0.12)') 'Average kernel time on the device: ', elapsed
     !$omp target update from(val(1:ngrid))
     !$omp end target data
   end subroutine run_gpu_kernel

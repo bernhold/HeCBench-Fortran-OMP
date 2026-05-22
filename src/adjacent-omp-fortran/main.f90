@@ -88,8 +88,9 @@ contains
     logical, intent(in) :: subtract_left
     integer :: b, i, idx
 
-    !$omp target teams distribute parallel do collapse(2)
+    !$omp target teams distribute private(i, idx)
     do b = 0, grid_size - 1
+      !$omp parallel do private(idx)
       do i = 0, items_per_block - 1
         idx = b * items_per_block + i + 1
         if (subtract_left) then
@@ -106,8 +107,9 @@ contains
           end if
         end if
       end do
+      !$omp end parallel do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine adjacent_kernel
 
   subroutine reference_adjacent(input, output, subtract_left, num_items, items_per_block, grid_size)

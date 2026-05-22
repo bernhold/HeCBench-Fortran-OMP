@@ -1,10 +1,10 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
-  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_c_binding, only : c_double, c_float, c_int
+  use, intrinsic :: iso_fortran_env, only : int32, output_unit, real32, real64
   use omp_lib
   implicit none
 
-  type :: particle
+  type, bind(C) :: particle
     real(real32) :: pos(3)
     real(real32) :: vel(3)
     real(real32) :: acc(3)
@@ -15,15 +15,17 @@ program main
   character(len=256) :: arg
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
+    subroutine nbody_init_particles(particles, n) bind(C, name='nbody_init_particles')
+      import :: c_int, particle
+      type(particle), intent(out) :: particles(*)
+      integer(c_int), value :: n
+    end subroutine nbody_init_particles
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine nbody_print_summary(kenergy, total_time, av, dev) bind(C, name='nbody_print_summary')
+      import :: c_double, c_float
+      real(c_float), value :: kenergy
+      real(c_double), value :: total_time, av, dev
+    end subroutine nbody_print_summary
   end interface
 
   npart = 16000_int32
@@ -56,6 +58,7 @@ contains
 
     write(*,'(A)') '==============================='
     write(*,'(A)') ' Initialize Gravity Simulation'
+    flush(output_unit)
 
     allocate(particles(npart), ref_particles(npart), energy(npart), ref_energy(npart))
     call initialize_particles(particles)
@@ -75,39 +78,9 @@ contains
 
   subroutine initialize_particles(particles)
     type(particle), intent(out) :: particles(:)
-    integer(int32) :: i
 
-    call c_srand(42_c_int)
-    do i = 1, size(particles)
-      particles(i)%pos(1) = rand_uniform(0.0_real32, 1.0_real32)
-      particles(i)%pos(2) = rand_uniform(0.0_real32, 1.0_real32)
-      particles(i)%pos(3) = rand_uniform(0.0_real32, 1.0_real32)
-    end do
-
-    call c_srand(42_c_int)
-    do i = 1, size(particles)
-      particles(i)%vel(1) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
-      particles(i)%vel(2) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
-      particles(i)%vel(3) = rand_uniform(-1.0_real32, 1.0_real32) * 1.0e-3_real32
-    end do
-
-    do i = 1, size(particles)
-      particles(i)%acc = 0.0_real32
-    end do
-
-    call c_srand(42_c_int)
-    do i = 1, size(particles)
-      particles(i)%mass = real(size(particles), real32) * rand_uniform(0.0_real32, 1.0_real32)
-    end do
+    call nbody_init_particles(particles, int(size(particles), c_int))
   end subroutine initialize_particles
-
-  real(real32) function rand_uniform(low, high) result(value)
-    real(real32), intent(in) :: low, high
-    real(real32) :: unit
-
-    unit = real(c_rand(), real32) / 2147483647.0_real32
-    value = low + (high - low) * unit
-  end function rand_uniform
 
   subroutine start_device(particles, energy, n, nsteps, kenergy, total_time, total_flops)
     type(particle), intent(inout) :: particles(:)
@@ -160,11 +133,7 @@ contains
       dev = sqrt(dev / real(nf - 2_int32, real64) - av * av)
     end if
 
-    write(*,*)
-    write(*,'(A,1X,ES16.8)') '# Total Energy        :', kenergy
-    write(*,'(A,1X,ES16.8)') '# Total Time (s)      :', total_time
-    write(*,'(A,1X,ES16.8,A,1X,ES16.8)') '# Average Performance :', av, ' +-', dev
-    write(*,'(A)') '==============================='
+    call nbody_print_summary(kenergy, total_time, av, dev)
   end subroutine start_device
 
   subroutine accelerate_particles_device(particles, n, softening_squared, grav_const)

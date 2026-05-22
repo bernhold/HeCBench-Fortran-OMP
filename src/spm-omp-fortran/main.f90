@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_bool, c_int, c_signed_char
   use, intrinsic :: iso_fortran_env, only : int32, real32, real64
   use omp_lib
   implicit none
@@ -31,8 +31,9 @@ program main
     0.168534_real32,0.896648_real32]
 
   integer :: v, repeat, data_size, vol_size, i, count_device, count_host, max_diff
-  integer(int32), allocatable :: f(:), g(:), ivf(:), ivg(:), ivf_ref(:), ivg_ref(:)
-  integer(int32), allocatable :: threshold(:), threshold_ref(:), hist_device(:), hist_host(:)
+  integer(c_signed_char), allocatable :: f(:), g(:), ivf(:), ivg(:), ivf_ref(:), ivg_ref(:)
+  logical(c_bool), allocatable :: threshold(:), threshold_ref(:)
+  integer(int32), allocatable :: hist_device(:), hist_host(:)
   real(real32) :: matrix(16)
   real(real64) :: start_time, end_time
 
@@ -65,16 +66,16 @@ program main
   call initialize_inputs(matrix, f, g)
   ivf = 0
   ivg = 0
-  threshold = 0
+  threshold = .false.
 
-  start_time = omp_get_wtime()
   !$omp target data map(to: matrix(1:16), g(1:data_size), f(1:data_size)) &
   !$omp& map(from: ivf(1:vol_size), ivg(1:vol_size), threshold(1:vol_size))
+  start_time = omp_get_wtime()
   do i = 1, repeat
     call spm_device(matrix, vol_size, g, f, v, ivf, ivg, threshold)
   end do
-  !$omp end target data
   end_time = omp_get_wtime()
+  !$omp end target data
   write(*, '(A,F0.6,A)') 'Average kernel execution time: ', ((end_time - start_time) * 1.0e3_real64) / real(repeat, real64), ' (ms)'
 
   hist_device = 0
@@ -102,23 +103,24 @@ contains
 
   subroutine initialize_inputs(matrix, f, g)
     real(real32), intent(out) :: matrix(:)
-    integer(int32), intent(out) :: f(:), g(:)
+    integer(c_signed_char), intent(out) :: f(:), g(:)
     integer :: i
     call c_srand(123_c_int)
     do i = 1, size(matrix)
       matrix(i) = real(c_rand(), real32) / 2147483647.0_real32
     end do
     do i = 1, size(f)
-      f(i) = int(mod(c_rand(), 256_c_int), int32)
-      g(i) = int(mod(c_rand(), 256_c_int), int32)
+      f(i) = int(mod(c_rand(), 256_c_int), c_signed_char)
+      g(i) = int(mod(c_rand(), 256_c_int), c_signed_char)
     end do
   end subroutine initialize_inputs
 
   subroutine spm_device(matrix, data_size, g, f, v, ivf, ivg, threshold)
     real(real32), intent(in) :: matrix(:)
     integer, intent(in) :: data_size, v
-    integer(int32), intent(in) :: g(:), f(:)
-    integer(int32), intent(out) :: ivf(:), ivg(:), threshold(:)
+    integer(c_signed_char), intent(in) :: g(:), f(:)
+    integer(c_signed_char), intent(out) :: ivf(:), ivg(:)
+    logical(c_bool), intent(out) :: threshold(:)
     integer :: idx, x_datasize, y_datasize, ix, iy, iz, base, upper_base
     integer :: k111, k112, k121, k122, k211, k212, k221, k222
     real(real32) :: xx_temp, yy_temp, zz_temp, rx, ry, rz, xp, yp, zp
@@ -144,13 +146,13 @@ contains
           .and. xp >= 1.0_real32 .and. xp < real(v, real32)) then
         call interp_inline(f, v, xp, yp, zp, vf)
         call interp_inline(g, v, rx, ry, rz, vg)
-        ivf(idx) = int(floor(vf + 0.5_real32), int32)
-        ivg(idx) = int(floor(vg + 0.5_real32), int32)
-        threshold(idx) = 1
+        ivf(idx) = int(floor(vf + 0.5_real32), c_signed_char)
+        ivg(idx) = int(floor(vg + 0.5_real32), c_signed_char)
+        threshold(idx) = .true.
       else
         ivf(idx) = 0
         ivg(idx) = 0
-        threshold(idx) = 0
+        threshold(idx) = .false.
       end if
     end do
     !$omp end target teams distribute parallel do
@@ -159,8 +161,9 @@ contains
   subroutine spm_host(matrix, data_size, g, f, v, ivf, ivg, threshold)
     real(real32), intent(in) :: matrix(:)
     integer, intent(in) :: data_size, v
-    integer(int32), intent(in) :: g(:), f(:)
-    integer(int32), intent(out) :: ivf(:), ivg(:), threshold(:)
+    integer(c_signed_char), intent(in) :: g(:), f(:)
+    integer(c_signed_char), intent(out) :: ivf(:), ivg(:)
+    logical(c_bool), intent(out) :: threshold(:)
     integer :: idx, x_datasize, y_datasize
     real(real32) :: xx_temp, yy_temp, zz_temp, rx, ry, rz, xp, yp, zp, vf, vg, r
     x_datasize = v - 2
@@ -180,19 +183,19 @@ contains
           .and. xp >= 1.0_real32 .and. xp < real(v, real32)) then
         call interp_inline(f, v, xp, yp, zp, vf)
         call interp_inline(g, v, rx, ry, rz, vg)
-        ivf(idx) = int(floor(vf + 0.5_real32), int32)
-        ivg(idx) = int(floor(vg + 0.5_real32), int32)
-        threshold(idx) = 1
+        ivf(idx) = int(floor(vf + 0.5_real32), c_signed_char)
+        ivg(idx) = int(floor(vg + 0.5_real32), c_signed_char)
+        threshold(idx) = .true.
       else
         ivf(idx) = 0
         ivg(idx) = 0
-        threshold(idx) = 0
+        threshold(idx) = .false.
       end if
     end do
   end subroutine spm_host
 
   subroutine interp_inline(field, v, x, y, z, value)
-    integer(int32), intent(in) :: field(:)
+    integer(c_signed_char), intent(in) :: field(:)
     integer, intent(in) :: v
     real(real32), intent(in) :: x, y, z
     real(real32), intent(out) :: value
@@ -209,15 +212,15 @@ contains
     dy2 = 1.0_real32 - dy1
     dz2 = 1.0_real32 - dz1
     base = ix + v * ((iy - 1) + v * (iz - 1))
-    k222 = field(base)
-    k122 = field(base + 1)
-    k212 = field(base + v)
-    k112 = field(base + v + 1)
+    k222 = byte_value(field(base))
+    k122 = byte_value(field(base + 1))
+    k212 = byte_value(field(base + v))
+    k112 = byte_value(field(base + v + 1))
     upper_base = base + v * v
-    k221 = field(upper_base)
-    k121 = field(upper_base + 1)
-    k211 = field(upper_base + v)
-    k111 = field(upper_base + v + 1)
+    k221 = byte_value(field(upper_base))
+    k121 = byte_value(field(upper_base + 1))
+    k211 = byte_value(field(upper_base + v))
+    k111 = byte_value(field(upper_base + v + 1))
     value = (((real(k222, real32) * dx2 + real(k122, real32) * dx1) * dy2 + &
              (real(k212, real32) * dx2 + real(k112, real32) * dx1) * dy1)) * dz2 + &
             (((real(k221, real32) * dx2 + real(k121, real32) * dx1) * dy2 + &
@@ -225,17 +228,23 @@ contains
   end subroutine interp_inline
 
   integer function build_histogram(ivf, ivg, threshold, histogram)
-    integer(int32), intent(in) :: ivf(:), ivg(:), threshold(:)
+    integer(c_signed_char), intent(in) :: ivf(:), ivg(:)
+    logical(c_bool), intent(in) :: threshold(:)
     integer(int32), intent(inout) :: histogram(:)
     integer :: idx, bin
     build_histogram = 0
     do idx = 1, size(threshold)
-      if (threshold(idx) /= 0) then
-        bin = ivf(idx) + ivg(idx) * 256 + 1
+      if (threshold(idx)) then
+        bin = byte_value(ivf(idx)) + byte_value(ivg(idx)) * 256 + 1
         histogram(bin) = histogram(bin) + 1
         build_histogram = build_histogram + 1
       end if
     end do
   end function build_histogram
+
+  integer function byte_value(value)
+    integer(c_signed_char), intent(in) :: value
+    byte_value = iand(int(value, int32), 255)
+  end function byte_value
 
 end program main

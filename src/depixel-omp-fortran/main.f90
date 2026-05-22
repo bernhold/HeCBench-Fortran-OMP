@@ -1,25 +1,32 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int32, real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int
   use omp_lib
   implicit none
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
+    subroutine depixel_seed_rng(seed) bind(C, name='depixel_seed_rng')
       import :: c_int
       integer(c_int), value :: seed
-    end subroutine c_srand
+    end subroutine depixel_seed_rng
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    function depixel_next_random() bind(C, name='depixel_next_random') result(value)
+      import :: c_float
+      real(c_float) :: value
+    end function depixel_next_random
   end interface
 
   integer, parameter :: nthreads = 256
+  type, bind(C) :: float3
+    real(c_float) :: x
+    real(c_float) :: y
+    real(c_float) :: z
+    real(c_float) :: pad
+  end type float3
+
   integer :: width, height, repeat, size, n, i, errors
   integer(int32), allocatable :: out(:), tmp(:), ref_tmp(:), ref_out(:)
-  real(real32), allocatable :: img_x(:), img_y(:), img_z(:)
+  type(float3), allocatable :: img(:)
   real(real32) :: sum_value, lsum
   real(real64) :: start_time, total_time
   character(len=256) :: arg0
@@ -36,32 +43,33 @@ program main
   if (width <= 0 .or. height <= 0 .or. repeat <= 0) stop 1
 
   size = width * height
-  allocate(img_x(size), img_y(size), img_z(size), tmp(size), out(size), ref_tmp(size), ref_out(size))
+  allocate(img(size), tmp(size), out(size), ref_tmp(size), ref_out(size))
   tmp = 0_int32
   out = 0_int32
   ref_tmp = 0_int32
   ref_out = 0_int32
-  call c_srand(19937_c_int)
+  call depixel_seed_rng(19937_c_int)
   sum_value = 0.0_real32
   total_time = 0.0_real64
   errors = 0
 
-  !$omp target data map(alloc: img_x(1:size), img_y(1:size), img_z(1:size), tmp(1:size)) map(from: out(1:size))
+  !$omp target data map(alloc: img(1:size), tmp(1:size)) map(from: out(1:size))
   do n = 1, repeat
     do i = 1, size
-      img_x(i) = next_random()
-      img_y(i) = next_random()
-      img_z(i) = next_random()
+      img(i)%x = depixel_next_random()
+      img(i)%y = depixel_next_random()
+      img(i)%z = depixel_next_random()
+      img(i)%pad = 0.0_c_float
     end do
 
-    !$omp target update to(img_x(1:size), img_y(1:size), img_z(1:size))
+    !$omp target update to(img(1:size))
     start_time = omp_get_wtime()
-    call check_connect_device(img_x, img_y, img_z, tmp, width, height, size)
+    call check_connect_device(img, tmp, width, height, size)
     call eliminate_crosses_device(tmp, out, width, height, size)
     total_time = total_time + (omp_get_wtime() - start_time)
     !$omp target update from(out(1:size))
 
-    call check_connect_host(img_x, img_y, img_z, ref_tmp, width, height, size)
+    call check_connect_host(img, ref_tmp, width, height, size)
     call eliminate_crosses_host(ref_tmp, ref_out, width, height, size)
     do i = 1, size
       if (.not. pixel_matches(out(i), ref_out(i))) then
@@ -90,13 +98,9 @@ program main
   write(*,'(A,F0.6)') 'checkSum: ', sum_value
   write(*,'(A,I0,A,F0.6,A)') 'Average kernel time over ', repeat, ' iterations: ', &
       total_time / real(repeat, real64), ' (s)'
-  if (errors == 0) then
-    write(*,'(A)') 'PASS'
-  else
-    write(*,'(A)') 'FAIL'
-  end if
+  if (errors /= 0) write(*,'(A)') 'FAIL'
 
-  deallocate(img_x, img_y, img_z, tmp, out, ref_tmp, ref_out)
+  deallocate(img, tmp, out, ref_tmp, ref_out)
 
 contains
 
@@ -106,11 +110,6 @@ contains
     call get_command_argument(pos, buffer)
     read(buffer, *) value
   end function read_int_arg
-
-  real(real32) function next_random() result(value)
-    integer, parameter :: rand_max = 2147483647
-    value = 0.4_real32 * real(c_rand(), real32) / real(rand_max, real32)
-  end function next_random
 
   logical function pixel_matches(actual, expected) result(ok)
     integer(int32), intent(in) :: actual, expected
@@ -140,13 +139,13 @@ contains
     end if
   end function saturatef
 
-  integer(int32) function rgb_to_yuv(r, g, b) result(packed)
-    real(real32), intent(in) :: r, g, b
+  integer(int32) function rgb_to_yuv(rgba) result(packed)
+    type(float3), intent(in) :: rgba
     real(real32) :: y, u, v
     integer(int32) :: yi, ui, vi
-    y = 0.299_real32 * r + 0.587_real32 * g + 0.114_real32 * b
-    u = 0.713_real32 * (r - y) + 0.5_real32
-    v = 0.564_real32 * (b - y) + 0.5_real32
+    y = 0.299_real32 * rgba%x + 0.587_real32 * rgba%y + 0.114_real32 * rgba%z
+    u = 0.713_real32 * (rgba%x - y) + 0.5_real32
+    v = 0.564_real32 * (rgba%z - y) + 0.5_real32
     yi = int(saturatef(y) * 255.0_real32, int32)
     ui = int(saturatef(u) * 255.0_real32, int32)
     vi = int(saturatef(v) * 255.0_real32, int32)
@@ -181,8 +180,8 @@ contains
     idx = row * width + column + 1
   end function idx0
 
-  subroutine check_connect_device(rgba_x, rgba_y, rgba_z, connect, w, h, size)
-    real(real32), intent(in) :: rgba_x(:), rgba_y(:), rgba_z(:)
+  subroutine check_connect_device(rgba, connect, w, h, size)
+    type(float3), intent(in) :: rgba(:)
     integer(int32), intent(inout) :: connect(:)
     integer, intent(in) :: w, h, size
     integer :: center, row, column, nr, nc
@@ -193,46 +192,46 @@ contains
       row = (center - 1) / w
       column = mod(center - 1, w)
       con = 0_int32
-      yuv_c = rgb_to_yuv(rgba_x(center), rgba_y(center), rgba_z(center))
+      yuv_c = rgb_to_yuv(rgba(center))
 
       nr = merge(row - 1, row, row > 0 .and. column > 0)
       nc = merge(column - 1, column, column > 0 .and. row > 0)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + 1_int32
 
       nr = merge(row - 1, row, row > 0)
       nc = column
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 1)
 
       nr = merge(row - 1, row, row > 0 .and. column < w - 1)
       nc = merge(column + 1, column, column < w - 1 .and. row > 0)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 2)
 
       nr = row
       nc = merge(column + 1, column, column < w - 1)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 3)
 
       nr = merge(row + 1, row, row < h - 1 .and. column < w - 1)
       nc = merge(column + 1, column, column < w - 1 .and. row < h - 1)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 4)
 
       nr = merge(row + 1, row, row < h - 1)
       nc = column
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 5)
 
       nr = merge(row + 1, row, row < h - 1 .and. column > 0)
       nc = merge(column - 1, column, column > 0 .and. row < h - 1)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 6)
 
       nr = row
       nc = merge(column - 1, column, column > 0)
-      yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+      yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
       if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, 7)
 
       connect(center) = ior(ior(ior(shiftl(iand(shiftr(yuv_c, 16), int(z'000000ff', int32)), 24), &
@@ -242,8 +241,8 @@ contains
     !$omp end target teams distribute parallel do
   end subroutine check_connect_device
 
-  subroutine check_connect_host(rgba_x, rgba_y, rgba_z, connect, w, h, size)
-    real(real32), intent(in) :: rgba_x(:), rgba_y(:), rgba_z(:)
+  subroutine check_connect_host(rgba, connect, w, h, size)
+    type(float3), intent(in) :: rgba(:)
     integer(int32), intent(inout) :: connect(:)
     integer, intent(in) :: w, h, size
     integer :: center, row, column, nr, nc
@@ -252,28 +251,28 @@ contains
       row = (center - 1) / w
       column = mod(center - 1, w)
       con = 0_int32
-      yuv_c = rgb_to_yuv(rgba_x(center), rgba_y(center), rgba_z(center))
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row - 1, row, row > 0 .and. column > 0), merge(column - 1, column, column > 0 .and. row > 0), 0)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row - 1, row, row > 0), column, 1)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row - 1, row, row > 0 .and. column < w - 1), merge(column + 1, column, column < w - 1 .and. row > 0), 2)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, row, merge(column + 1, column, column < w - 1), 3)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row + 1, row, row < h - 1 .and. column < w - 1), merge(column + 1, column, column < w - 1 .and. row < h - 1), 4)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row + 1, row, row < h - 1), column, 5)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, merge(row + 1, row, row < h - 1 .and. column > 0), merge(column - 1, column, column > 0 .and. row < h - 1), 6)
-      call add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, row, merge(column - 1, column, column > 0), 7)
+      yuv_c = rgb_to_yuv(rgba(center))
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row - 1, row, row > 0 .and. column > 0), merge(column - 1, column, column > 0 .and. row > 0), 0)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row - 1, row, row > 0), column, 1)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row - 1, row, row > 0 .and. column < w - 1), merge(column + 1, column, column < w - 1 .and. row > 0), 2)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, row, merge(column + 1, column, column < w - 1), 3)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row + 1, row, row < h - 1 .and. column < w - 1), merge(column + 1, column, column < w - 1 .and. row < h - 1), 4)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row + 1, row, row < h - 1), column, 5)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, merge(row + 1, row, row < h - 1 .and. column > 0), merge(column - 1, column, column > 0 .and. row < h - 1), 6)
+      call add_neighbor(con, yuv_c, rgba, w, row, column, row, merge(column - 1, column, column > 0), 7)
       connect(center) = ior(ior(ior(shiftl(iand(shiftr(yuv_c, 16), int(z'000000ff', int32)), 24), &
           shiftl(iand(shiftr(yuv_c, 8), int(z'000000ff', int32)), 16)), &
           shiftl(iand(yuv_c, int(z'000000ff', int32)), 8)), con)
     end do
   end subroutine check_connect_host
 
-  subroutine add_neighbor(con, yuv_c, rgba_x, rgba_y, rgba_z, w, row, column, nr, nc, bit)
+  subroutine add_neighbor(con, yuv_c, rgba, w, row, column, nr, nc, bit)
     integer(int32), intent(inout) :: con
     integer(int32), intent(in) :: yuv_c
-    real(real32), intent(in) :: rgba_x(:), rgba_y(:), rgba_z(:)
+    type(float3), intent(in) :: rgba(:)
     integer, intent(in) :: w, row, column, nr, nc, bit
     integer(int32) :: yuv_n
-    yuv_n = rgb_to_yuv(rgba_x(idx0(nr, nc, w)), rgba_y(idx0(nr, nc, w)), rgba_z(idx0(nr, nc, w)))
+    yuv_n = rgb_to_yuv(rgba(idx0(nr, nc, w)))
     if (.not. (row == nr .and. column == nc) .and. is_connected(yuv_c, yuv_n)) con = con + shiftl(1_int32, bit)
   end subroutine add_neighbor
 

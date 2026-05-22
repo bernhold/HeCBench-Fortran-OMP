@@ -70,7 +70,7 @@ program main
     elapsed_ms = (omp_get_wtime() - start_time) * 1.0e3_real64 / real(repeat, real64)
     memory_ops = (2_int64 * total_size + int(cols, int64)) * 4_int64
     bandwidth = real(memory_ops, real64) / elapsed_ms / 1.0e6_real64
-    write(*,'(A,I4,A,F0.4,A,F0.2,A)') 'block_size ', block_size, ' | time ', elapsed_ms, &
+    write(*,'(A,I4,A,F6.4,A,F4.2,A)') 'block_size ', block_size, ' | time ', elapsed_ms, &
       ' ms | bandwidth ', bandwidth, ' GB/s'
   end do
 
@@ -82,7 +82,7 @@ program main
     elapsed_ms = (omp_get_wtime() - start_time) * 1.0e3_real64 / real(repeat, real64)
     memory_ops = (2_int64 * total_size + int(cols, int64)) * 4_int64
     bandwidth = real(memory_ops, real64) / elapsed_ms / 1.0e6_real64
-    write(*,'(A,I4,A,F0.4,A,F0.2,A)') 'block_size ', block_size, ' | time ', elapsed_ms, &
+    write(*,'(A,I4,A,F6.4,A,F4.2,A)') 'block_size ', block_size, ' | time ', elapsed_ms, &
       ' ms | bandwidth ', bandwidth, ' GB/s'
   end do
   !$omp end target data
@@ -108,20 +108,24 @@ contains
     integer :: t, j, base
     real(real32) :: m, s
 
-    !$omp target teams distribute parallel do private(j, base, m, s) thread_limit(block_size)
+    !$omp target teams distribute num_teams(rows) private(j, base, m, s)
     do t = 0, rows - 1
       base = t * cols
       m = 0.0_real32
+      !$omp parallel do reduction(+:m) num_threads(block_size)
       do j = 1, cols
         m = m + inp(base + j) * inp(base + j)
       end do
+      !$omp end parallel do
       m = m / real(cols, real32)
       s = 1.0_real32 / sqrt(m + eps)
+      !$omp parallel do num_threads(block_size)
       do j = 1, cols
         out(base + j) = inp(base + j) * s * gamma(j)
       end do
+      !$omp end parallel do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine rmsnorm_forward_kernel
 
   subroutine rmsnorm_forward_kernel2(inp, gamma, out, rows, cols, block_size)
@@ -131,19 +135,23 @@ contains
     integer :: t, j, base
     real(real32) :: m, s
 
-    !$omp target teams distribute parallel do private(j, base, m, s) thread_limit(block_size)
+    !$omp target teams distribute num_teams(rows) private(j, base, m, s)
     do t = 0, rows - 1
       base = t * cols
       m = 0.0_real32
+      !$omp parallel do reduction(+:m) num_threads(block_size)
       do j = 1, cols
         m = m + inp(base + j) * inp(base + j)
       end do
+      !$omp end parallel do
       s = 1.0_real32 / sqrt(m / real(cols, real32) + eps)
+      !$omp parallel do num_threads(block_size)
       do j = 1, cols
         out(base + j) = inp(base + j) * s * gamma(j)
       end do
+      !$omp end parallel do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine rmsnorm_forward_kernel2
 
   subroutine run_repeated(which_kernel, inp, gamma, out, rows, cols, block_size, repeat)

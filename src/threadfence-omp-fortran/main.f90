@@ -4,8 +4,8 @@ program threadfence_main
   implicit none
 
   integer :: repeat, n, blocks, grids, iter
-  real(real32), allocatable :: h_array(:)
-  real(real32) :: result
+  integer, allocatable :: h_count(:)
+  real(real32), allocatable :: h_array(:), h_result(:)
   real(8) :: elapsed, start_time, end_time
   logical :: ok
 
@@ -15,18 +15,23 @@ program threadfence_main
   grids = (n + blocks - 1) / blocks
 
   allocate(h_array(n))
+  allocate(h_result(grids))
+  allocate(h_count(1))
   h_array = -1.0_real32
+  h_count(1) = 0
   elapsed = 0.0_8
   ok = .true.
 
-  !$omp target data map(to: h_array)
+  !$omp target data map(to: h_array) map(tofrom: h_count) map(alloc: h_result)
   do iter = 1, repeat
     start_time = omp_get_wtime()
-    call sum_device(h_array, n, result)
+    call sum_device(grids, blocks, h_array, n, h_count, h_result)
     end_time = omp_get_wtime()
     elapsed = elapsed + (end_time - start_time)
 
-    if (result /= -1.0_real32 * real(n, real32)) then
+    !$omp target update from(h_result(1:1))
+
+    if (h_result(1) /= -1.0_real32 * real(n, real32)) then
       ok = .false.
       exit
     end if
@@ -55,27 +60,73 @@ contains
 
     call get_command_argument(1, arg)
     read(arg, *, iostat=status) repeat
-    if (status /= 0 .or. repeat <= 0) error stop "invalid repeat"
+    if (status /= 0) repeat = 0
 
     call get_command_argument(2, arg)
     read(arg, *, iostat=status) n
-    if (status /= 0 .or. n <= 0) error stop "invalid array length"
+    if (status /= 0) n = 0
   end subroutine parse_args
 
-  subroutine sum_device(array, n, result)
+  subroutine sum_device(teams, blocks, array, n, count, result)
+    integer, intent(in) :: teams, blocks
     integer, intent(in) :: n
+    integer, intent(inout) :: count(1)
     real(real32), intent(in) :: array(n)
-    real(real32), intent(out) :: result
-    integer :: i
-    real(real32) :: total
+    real(real32), intent(inout) :: result(teams)
+    integer :: bid, num_blocks, block_size, lid, gid, i, value
+    logical :: isLastBlockDone
+    real(real32) :: partialSum
 
-    total = 0.0_real32
-    !$omp target teams distribute parallel do thread_limit(256) reduction(+:total)
-    do i = 1, n
-      total = total + array(i)
-    end do
-    !$omp end target teams distribute parallel do
-    result = total
+    !$omp target teams num_teams(teams) thread_limit(blocks)
+    !$omp parallel private(bid, num_blocks, block_size, lid, gid, i, value) &
+    !$omp& shared(array, count, result, partialSum, isLastBlockDone)
+    bid = omp_get_team_num()
+    num_blocks = teams
+    block_size = blocks
+    lid = omp_get_thread_num()
+    gid = bid * block_size + lid
+
+    if (lid == 0) partialSum = 0.0_real32
+    !$omp barrier
+
+    if (gid < n) then
+      !$omp atomic update
+      partialSum = partialSum + array(gid + 1)
+    end if
+
+    !$omp barrier
+
+    if (lid == 0) then
+      result(bid + 1) = partialSum
+
+      !$omp atomic capture
+      value = count(1)
+      count(1) = count(1) + 1
+      !$omp end atomic
+
+      isLastBlockDone = (value == (num_blocks - 1))
+    end if
+
+    !$omp barrier
+
+    if (isLastBlockDone) then
+      if (lid == 0) partialSum = 0.0_real32
+      !$omp barrier
+
+      do i = lid, num_blocks - 1, block_size
+        !$omp atomic update
+        partialSum = partialSum + result(i + 1)
+      end do
+
+      !$omp barrier
+
+      if (lid == 0) then
+        result(1) = partialSum
+        count(1) = 0
+      end if
+    end if
+    !$omp end parallel
+    !$omp end target teams
   end subroutine sum_device
 
 end program threadfence_main

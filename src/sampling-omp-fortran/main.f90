@@ -1,4 +1,5 @@
 program main
+  use, intrinsic :: iso_c_binding, only : c_double, c_int64_t
   use, intrinsic :: iso_fortran_env, only : real32, real64
   use omp_lib
   implicit none
@@ -9,6 +10,7 @@ program main
   integer, parameter :: ncols_cases(ncases) = [2000, 2000, 2000]
   integer, parameter :: background_cases(ncases) = [10, 10, 10]
   integer, parameter :: max_samples_cases(ncases) = [11, 11, 11]
+  integer(c_int64_t), parameter :: seed_cases(ncases) = [1234_c_int64_t, 1234_c_int64_t, 1234_c_int64_t]
   integer :: repeat, case_id, r
   real(real64) :: total_time
 
@@ -17,16 +19,12 @@ program main
     stop 1
   end if
   repeat = read_arg(1)
-  if (repeat <= 0) then
-    print '(A)', 'invalid repeat'
-    stop 1
-  end if
 
   do case_id = 1, ncases
     total_time = 0.0_real64
     do r = 1, repeat
       call run_case(exact_cases(case_id), sampled_cases(case_id), ncols_cases(case_id), &
-                    background_cases(case_id), max_samples_cases(case_id), total_time)
+                    background_cases(case_id), max_samples_cases(case_id), seed_cases(case_id), total_time)
     end do
     write(*, '(A,F0.6,A)') 'Average execution time of kernels: ', (total_time * 1.0e6_real64) / real(repeat, real64), ' (us)'
   end do
@@ -40,8 +38,19 @@ contains
     read(buffer, *) read_arg
   end function read_arg
 
-  subroutine run_case(nrows_exact, nrows_sampled, ncols, nrows_background, max_samples, total_time)
+  function LCG_random_double(seed) result(random_value)
+    integer(c_int64_t), intent(inout) :: seed
+    real(c_double) :: random_value
+    integer(c_int64_t), parameter :: a = 2806196910506780709_c_int64_t
+
+    seed = a * seed + 1_c_int64_t
+    seed = iand(seed, not(ishft(1_c_int64_t, 63)))
+    random_value = real(seed, c_double) / real(ishft(1_c_int64_t, 62), c_double) / 2.0_c_double
+  end function LCG_random_double
+
+  subroutine run_case(nrows_exact, nrows_sampled, ncols, nrows_background, max_samples, seed, total_time)
     integer, intent(in) :: nrows_exact, nrows_sampled, ncols, nrows_background, max_samples
+    integer(c_int64_t), intent(in) :: seed
     real(real64), intent(inout) :: total_time
     integer :: nrows_x, i, j
     real(real32) :: sent_value
@@ -73,17 +82,17 @@ contains
     end do
     dataset = 0.0_real32
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: background(1:nrows_background*ncols), observation(1:ncols), nsamples(1:max(1,nrows_sampled/2))) &
     !$omp& map(tofrom: x(1:nrows_x*ncols)) map(from: dataset(1:nrows_x*nrows_background*ncols))
+      start_time = omp_get_wtime()
       if (nrows_exact > 0) then
         call fill_exact(background, observation, x, dataset, nrows_exact, ncols, nrows_background)
       end if
       if (nrows_sampled > 0) then
-        call fill_sampled(background, observation, nsamples, x, dataset, nrows_exact, nrows_sampled, ncols, nrows_background)
+        call fill_sampled(background, observation, nsamples, x, dataset, nrows_exact, nrows_sampled, ncols, nrows_background, seed)
       end if
+      end_time = omp_get_wtime()
     !$omp end target data
-    end_time = omp_get_wtime()
     total_time = total_time + (end_time - start_time)
 
     call validate_case(x, dataset, nsamples, sent_value, nrows_exact, nrows_sampled, ncols, nrows_background)
@@ -94,67 +103,85 @@ contains
     real(real32), intent(in) :: background(:), observation(:), x(:)
     real(real32), intent(out) :: dataset(:)
     integer, intent(in) :: nrows_exact, ncols, nrows_background
-    integer :: row, bg, col, curr_x, out_idx
+    integer :: gid, col, row, row_idx, curr_x, nthreads
 
-    !$omp target teams distribute parallel do collapse(3) thread_limit(256) private(row, bg, col, curr_x, out_idx)
-    do row = 0, nrows_exact - 1
-      do bg = 0, nrows_background - 1
-        do col = 0, ncols - 1
-          curr_x = int(x(row * ncols + col + 1))
-          out_idx = (row * nrows_background + bg) * ncols + col + 1
+    nthreads = min(256, ncols)
+    !$omp target teams num_teams(nrows_exact) thread_limit(nthreads)
+    !$omp parallel private(gid, col, row, row_idx, curr_x)
+      gid = omp_get_team_num()
+      col = omp_get_thread_num()
+      row = gid * ncols
+      do while (col < ncols)
+        curr_x = int(x(row + col + 1))
+        do row_idx = gid * nrows_background, gid * nrows_background + nrows_background - 1
           if (curr_x == 0) then
-            dataset(out_idx) = background(bg * ncols + col + 1)
+            dataset(row_idx * ncols + col + 1) = background(mod(row_idx, nrows_background) * ncols + col + 1)
           else
-            dataset(out_idx) = observation(col + 1)
+            dataset(row_idx * ncols + col + 1) = observation(col + 1)
           end if
         end do
+        col = col + omp_get_num_threads()
       end do
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp end parallel
+    !$omp end target teams
   end subroutine fill_exact
 
-  subroutine fill_sampled(background, observation, nsamples, x, dataset, nrows_exact, nrows_sampled, ncols, nrows_background)
+  subroutine fill_sampled(background, observation, nsamples, x, dataset, nrows_exact, nrows_sampled, ncols, nrows_background, seed)
     real(real32), intent(in) :: background(:), observation(:)
     integer, intent(in) :: nsamples(:)
     real(real32), intent(inout) :: x(:)
     real(real32), intent(inout) :: dataset(:)
     integer, intent(in) :: nrows_exact, nrows_sampled, ncols, nrows_background
-    integer :: pair_id, bg, col, row0, row1, sample_count, curr_x, out_idx
+    integer(c_int64_t), intent(in) :: seed
+    integer :: bid, tid, k_blk, rand_idx, col_idx, curr_x, bg_row_idx, nthreads
+    integer(c_int64_t) :: seed_value
+    real(real32) :: old_x
 
-    !$omp target teams distribute parallel do collapse(3) thread_limit(256) private(pair_id, bg, col, row0, row1, sample_count, curr_x, out_idx)
-    do pair_id = 0, nrows_sampled / 2 - 1
-      do bg = 0, nrows_background - 1
-        do col = 0, ncols - 1
-          row0 = nrows_exact + 2 * pair_id
-          row1 = row0 + 1
-          sample_count = nsamples(pair_id + 1)
-          if (col < sample_count) then
-            x(row0 * ncols + col + 1) = 1.0_real32
-            x(row1 * ncols + col + 1) = 0.0_real32
-          else
-            x(row0 * ncols + col + 1) = 0.0_real32
-            x(row1 * ncols + col + 1) = 1.0_real32
-          end if
+    nthreads = min(256, ncols)
+    !$omp target teams num_teams(nrows_sampled / 2) thread_limit(nthreads)
+    !$omp parallel private(bid, tid, k_blk, rand_idx, col_idx, curr_x, bg_row_idx, old_x, seed_value)
+      bid = omp_get_team_num()
+      tid = omp_get_thread_num()
+      seed_value = seed
+      k_blk = nsamples(bid + 1)
+      if (tid < k_blk) then
+        rand_idx = int(LCG_random_double(seed_value) * real(ncols, c_double))
+        do
+          !$omp atomic capture
+          old_x = x((nrows_exact + 2 * bid) * ncols + rand_idx + 1)
+          x((nrows_exact + 2 * bid) * ncols + rand_idx + 1) = 1.0_real32
+          !$omp end atomic
+          if (old_x == 0.0_real32) exit
+          rand_idx = int(LCG_random_double(seed_value) * real(ncols, c_double))
+        end do
+      end if
+      !$omp barrier
 
-          curr_x = int(x(row0 * ncols + col + 1))
-          out_idx = (row0 * nrows_background + bg) * ncols + col + 1
+      col_idx = tid
+      do while (col_idx < ncols)
+        curr_x = int(x((nrows_exact + 2 * bid) * ncols + col_idx + 1))
+        x((nrows_exact + 2 * bid + 1) * ncols + col_idx + 1) = real(1 - curr_x, real32)
+        do bg_row_idx = 2 * bid * nrows_background, 2 * bid * nrows_background + nrows_background - 1
           if (curr_x == 0) then
-            dataset(out_idx) = background(bg * ncols + col + 1)
+            dataset((nrows_exact * nrows_background + bg_row_idx) * ncols + col_idx + 1) = &
+              background(mod(bg_row_idx, nrows_background) * ncols + col_idx + 1)
           else
-            dataset(out_idx) = observation(col + 1)
-          end if
-
-          curr_x = int(x(row1 * ncols + col + 1))
-          out_idx = (row1 * nrows_background + bg) * ncols + col + 1
-          if (curr_x == 1) then
-            dataset(out_idx) = observation(col + 1)
-          else
-            dataset(out_idx) = background(bg * ncols + col + 1)
+            dataset((nrows_exact * nrows_background + bg_row_idx) * ncols + col_idx + 1) = observation(col_idx + 1)
           end if
         end do
+
+        do bg_row_idx = (2 * bid + 1) * nrows_background, (2 * bid + 2) * nrows_background - 1
+          if (curr_x == 0) then
+            dataset((nrows_exact * nrows_background + bg_row_idx) * ncols + col_idx + 1) = observation(col_idx + 1)
+          else
+            dataset((nrows_exact * nrows_background + bg_row_idx) * ncols + col_idx + 1) = &
+              background(mod(bg_row_idx, nrows_background) * ncols + col_idx + 1)
+          end if
+        end do
+        col_idx = col_idx + omp_get_num_threads()
       end do
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp end parallel
+    !$omp end target teams
   end subroutine fill_sampled
 
   subroutine validate_case(x, dataset, nsamples, sent_value, nrows_exact, nrows_sampled, ncols, nrows_background)

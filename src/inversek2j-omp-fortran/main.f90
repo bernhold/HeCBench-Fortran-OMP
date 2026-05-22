@@ -13,7 +13,6 @@ program main
   character(len=512) :: input_path
   integer :: data_size, iteration, error_count
   real(real32), allocatable :: x_target(:), y_target(:), angle_device(:), angle_cpu(:)
-  real(real64) :: start_time, end_time, avg_us
 
   if (command_argument_count() /= 2) then
     write(*, '(A)', advance='no') 'Usage: ./invkin <input file coefficients> <iterations>'
@@ -23,7 +22,6 @@ program main
 
   call get_command_argument(1, input_path)
   iteration = read_arg(2)
-  if (iteration <= 0) error stop 'iteration count must be positive'
 
   call read_coordinates(trim(input_path), x_target, y_target, data_size)
   allocate(angle_device(data_size * num_joints), angle_cpu(data_size * num_joints))
@@ -33,11 +31,7 @@ program main
   print '(A,I0)', '# Data Size = ', data_size
   print '(A)', '# Coordinates are read from file...'
 
-  start_time = omp_get_wtime()
   call invkin_device(x_target, y_target, angle_device, data_size, iteration)
-  end_time = omp_get_wtime()
-  avg_us = ((end_time - start_time) * 1.0e6_real64) / real(iteration, real64)
-  write(*, '(A,F0.6,A)') 'Average kernel execution time ', avg_us, ' (us)'
 
   call invkin_cpu(x_target, y_target, angle_cpu, data_size)
   error_count = count_angle_errors(angle_device, angle_cpu, data_size)
@@ -83,8 +77,10 @@ contains
     real(real32) :: pe_x, pe_y, pc_x, pc_y, diff_pe_pc_x, diff_pe_pc_y
     real(real32) :: diff_tgt_pc_x, diff_tgt_pc_y, len_diff_pe_pc, len_diff_tgt_pc
     real(real32) :: a_x, a_y, b_x, b_y
+    real(real64) :: start_time, end_time, avg_us
 
     !$omp target data map(to: x_target(1:data_size), y_target(1:data_size)) map(from: angles(1:data_size*num_joints))
+    start_time = omp_get_wtime()
     do n = 1, iteration
       !$omp target teams distribute parallel do simd thread_limit(block_size) &
       !$omp& private(i, iter, curr_loop, angle_out, x_data, y_data, curr_x, curr_y, angle, direction, a_dot_b) &
@@ -139,6 +135,9 @@ contains
       end do
       !$omp end target teams distribute parallel do simd
     end do
+    end_time = omp_get_wtime()
+    avg_us = ((end_time - start_time) * 1.0e6_real64) / real(iteration, real64)
+    write(*, '(A,F0.6,A)') 'Average kernel execution time ', avg_us, ' (us)'
     !$omp end target data
   end subroutine invkin_device
 

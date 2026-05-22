@@ -24,6 +24,10 @@ program main
   real(real64), parameter :: xmax = x0 + xl
   integer, parameter :: ni = nc + 1
   integer, parameter :: threads_per_block = 256
+  integer, parameter :: particle_x = 0
+  integer, parameter :: particle_v = 1
+  integer, parameter :: particle_alive = 2
+  integer, parameter :: particle_stride = 3
 
   interface
     subroutine c_srand(seed) bind(C, name="srand")
@@ -39,8 +43,7 @@ program main
 
   real(real64), allocatable :: phi(:), rho(:), ef(:), phi_direct(:)
   real(real32), allocatable :: ndi(:), nde(:), ndi_ref(:), nde_ref(:)
-  real(real64), allocatable :: ions_x(:), ions_v(:), electrons_x(:), electrons_v(:)
-  integer, allocatable :: ions_alive(:), electrons_alive(:)
+  real(real64), allocatable :: ions_part(:), electrons_part(:)
   real(real64) :: ions_mass, ions_charge, ions_spwt
   real(real64) :: electrons_mass, electrons_charge, electrons_spwt
   real(real64) :: delta_ions, delta_electrons, v_thi, v_the
@@ -49,9 +52,8 @@ program main
 
   allocate(phi(0:ni - 1), rho(0:ni - 1), ef(0:ni - 1), phi_direct(0:ni - 1))
   allocate(ndi(0:ni - 1), nde(0:ni - 1), ndi_ref(0:ni - 1), nde_ref(0:ni - 1))
-  allocate(ions_x(0:num_ions - 1), ions_v(0:num_ions - 1), ions_alive(0:num_ions - 1))
-  allocate(electrons_x(0:num_electrons - 1), electrons_v(0:num_electrons - 1), &
-    electrons_alive(0:num_electrons - 1))
+  allocate(ions_part(0:particle_stride * num_ions - 1), &
+    electrons_part(0:particle_stride * num_electrons - 1))
 
   phi = 0.0_real64
   rho = 0.0_real64
@@ -71,36 +73,35 @@ program main
   delta_ions = xl / real(num_ions, real64)
   v_thi = sqrt(2.0_real64 * k_b * ion_temp * ev_to_k / ions_mass)
   do p = 0, num_ions - 1
-    ions_x(p) = x0 + real(p, real64) * delta_ions
-    ions_v(p) = sample_vel(v_thi)
-    ions_alive(p) = 1
+    ions_part(particle_stride * p + particle_x) = x0 + real(p, real64) * delta_ions
+    ions_part(particle_stride * p + particle_v) = sample_vel(v_thi)
+    ions_part(particle_stride * p + particle_alive) = 1.0_real64
   end do
 
   delta_electrons = xl / real(num_electrons, real64)
   v_the = sqrt(2.0_real64 * k_b * electron_temp * ev_to_k / electrons_mass)
   do p = 0, num_electrons - 1
-    electrons_x(p) = x0 + real(p, real64) * delta_electrons
-    electrons_v(p) = sample_vel(v_the)
-    electrons_alive(p) = 1
+    electrons_part(particle_stride * p + particle_x) = x0 + real(p, real64) * delta_electrons
+    electrons_part(particle_stride * p + particle_v) = sample_vel(v_the)
+    electrons_part(particle_stride * p + particle_alive) = 1.0_real64
   end do
 
-  !$omp target data map(to: ions_x(0:num_ions - 1), ions_v(0:num_ions - 1), &
-  !$omp& ions_alive(0:num_ions - 1), electrons_x(0:num_electrons - 1), &
-  !$omp& electrons_v(0:num_electrons - 1), electrons_alive(0:num_electrons - 1)) &
+  !$omp target data map(to: ions_part(0:particle_stride * num_ions - 1), &
+  !$omp& electrons_part(0:particle_stride * num_electrons - 1)) &
   !$omp& map(alloc: ndi(0:ni - 1), nde(0:ni - 1), ef(0:ni - 1))
 
-  call scatter_species(num_ions, ions_x, ions_alive, ndi, ions_spwt, sp_time)
-  call scatter_species(num_electrons, electrons_x, electrons_alive, nde, electrons_spwt, sp_time)
-  call scatter_species_host(num_ions, ions_x, ions_alive, ndi_ref, ions_spwt)
-  call scatter_species_host(num_electrons, electrons_x, electrons_alive, nde_ref, electrons_spwt)
+  call scatter_species(num_ions, ions_part, ndi, ions_spwt, sp_time)
+  call scatter_species(num_electrons, electrons_part, nde, electrons_spwt, sp_time)
+  call scatter_species_host(num_ions, ions_part, ndi_ref, ions_spwt)
+  call scatter_species_host(num_electrons, electrons_part, nde_ref, electrons_spwt)
   call validate_density(ndi, ndi_ref, 'ion')
   call validate_density(nde, nde_ref, 'electron')
 
   call compute_rho(ions_charge, electrons_charge, ndi, nde, rho)
   call solve_potential(phi, rho)
   call compute_ef(phi, ef)
-  call rewind_species(num_electrons, electrons_x, electrons_v, electrons_alive, electrons_charge / electrons_mass, ef)
-  call rewind_species(num_ions, ions_x, ions_v, ions_alive, ions_charge / ions_mass, ef)
+  call rewind_species(num_electrons, electrons_part, electrons_charge / electrons_mass, ef)
+  call rewind_species(num_ions, ions_part, ions_charge / ions_mass, ef)
 
   open(unit=10, file='result.dat', status='replace', action='write', iostat=ios)
   if (ios /= 0) error stop 'failed to open result.dat'
@@ -109,18 +110,18 @@ program main
 
   start_time = omp_get_wtime()
   do ts = 1, num_ts
-    call scatter_species(num_ions, ions_x, ions_alive, ndi, ions_spwt, sp_time)
-    call scatter_species(num_electrons, electrons_x, electrons_alive, nde, electrons_spwt, sp_time)
+    call scatter_species(num_ions, ions_part, ndi, ions_spwt, sp_time)
+    call scatter_species(num_electrons, electrons_part, nde, electrons_spwt, sp_time)
     call compute_rho(ions_charge, electrons_charge, ndi, nde, rho)
     call solve_potential(phi, rho)
     call compute_ef(phi, ef)
-    call push_species(num_electrons, electrons_x, electrons_v, electrons_alive, electrons_charge / electrons_mass, ef)
-    call push_species(num_ions, ions_x, ions_v, ions_alive, ions_charge / ions_mass, ef)
+    call push_species(num_electrons, electrons_part, electrons_charge / electrons_mass, ef)
+    call push_species(num_ions, ions_part, ions_charge / ions_mass, ef)
 
     if (mod(ts, 25) == 0) then
       max_phi = maxval(abs(phi))
-      write(*,'(A,I0,A,I0,A,I0,A,ES9.3)') 'TS:', ts, char(9)//'np_i:', num_ions, &
-        char(9)//'np_e:', num_electrons, char(9)//'dphi:', max_phi - phi(0)
+      write(*,'(A,I0,A,I0,A,I0,A,A)') 'TS:', ts, char(9)//'np_i:', num_ions, &
+        char(9)//'np_e:', num_electrons, char(9)//'dphi:', trim(format_g3(max_phi - phi(0)))
     end if
 
     if (mod(ts, 1000) == 0) call write_results(10, ts, nde, ndi, rho, phi, ef)
@@ -134,11 +135,12 @@ program main
   call solve_potential_direct(phi_direct, rho)
   call validate_phi(phi, phi_direct)
 
-  write(*,'(A,ES9.3,A)') 'Total kernel execution time (scatter particles) : ', sp_time, ' (s)'
-  write(*,'(A,I0,A,ES9.3,A)') 'Total time for ', num_ts, ' time steps: ', total_time, ' (s)'
-  write(*,'(A,ES9.3,A)') 'Time per time step: ', (total_time * 1.0e3_real64) / real(num_ts, real64), ' (ms)'
+  write(*,'(A,A,A)') 'Total kernel execution time (scatter particles) : ', trim(format_g3(sp_time)), ' (s)'
+  write(*,'(A,I0,A,A,A)') 'Total time for ', num_ts, ' time steps: ', trim(format_g3(total_time)), ' (s)'
+  write(*,'(A,A,A)') 'Time per time step: ', &
+    trim(format_g3((total_time * 1.0e3_real64) / real(num_ts, real64))), ' (ms)'
 
-  deallocate(electrons_alive, electrons_v, electrons_x, ions_alive, ions_v, ions_x)
+  deallocate(electrons_part, ions_part)
   deallocate(nde_ref, ndi_ref, nde, ndi, phi_direct, ef, rho, phi)
 
 contains
@@ -161,10 +163,39 @@ contains
       sqrt(real(m, real64) / 12.0_real64)
   end function sample_vel
 
-  subroutine scatter_species(npart, xpos, alive, den, spwt, time_accum)
+  character(len=32) function format_g3(value) result(text)
+    real(real64), intent(in) :: value
+    character(len=32) :: buffer
+    integer :: dot_pos, exp_pos, last
+
+    write(buffer,'(G0.3)') value
+    buffer = adjustl(buffer)
+    exp_pos = index(buffer, 'E')
+    if (exp_pos == 0) exp_pos = index(buffer, 'D')
+    if (exp_pos > 0) then
+      last = exp_pos - 1
+    else
+      last = len_trim(buffer)
+    end if
+
+    dot_pos = index(buffer(:last), '.')
+    if (dot_pos > 0) then
+      do while (last > dot_pos .and. buffer(last:last) == '0')
+        last = last - 1
+      end do
+      if (last == dot_pos) last = last - 1
+    end if
+
+    if (exp_pos > 0) then
+      text = buffer(:last) // buffer(exp_pos:len_trim(buffer))
+    else
+      text = buffer(:last)
+    end if
+  end function format_g3
+
+  subroutine scatter_species(npart, particles, den, spwt, time_accum)
     integer, intent(in) :: npart
-    real(real64), intent(in) :: xpos(0:)
-    integer, intent(in) :: alive(0:)
+    real(real64), intent(in) :: particles(0:)
     real(real32), intent(inout) :: den(0:)
     real(real64), intent(in) :: spwt
     real(real64), intent(inout) :: time_accum
@@ -179,7 +210,8 @@ contains
     t0 = omp_get_wtime()
     !$omp target teams distribute parallel do thread_limit(threads_per_block)
     do i = 0, npart - 1
-      if (alive(i) /= 0) call scatter_value(xpos(i) / dx, 1.0_real32, den)
+      if (particles(particle_stride * i + particle_alive) /= 0.0_real64) &
+        call scatter_value(particles(particle_stride * i + particle_x) / dx, 1.0_real32, den)
     end do
     t1 = omp_get_wtime()
     time_accum = time_accum + (t1 - t0)
@@ -192,17 +224,17 @@ contains
     den(ni - 1) = den(ni - 1) * 2.0_real32
   end subroutine scatter_species
 
-  subroutine scatter_species_host(npart, xpos, alive, den, spwt)
+  subroutine scatter_species_host(npart, particles, den, spwt)
     integer, intent(in) :: npart
-    real(real64), intent(in) :: xpos(0:)
-    integer, intent(in) :: alive(0:)
+    real(real64), intent(in) :: particles(0:)
     real(real32), intent(out) :: den(0:)
     real(real64), intent(in) :: spwt
     integer :: i
 
     den = 0.0_real32
     do i = 0, npart - 1
-      if (alive(i) /= 0) call scatter_value_host(xpos(i) / dx, 1.0_real32, den)
+      if (particles(particle_stride * i + particle_alive) /= 0.0_real64) &
+        call scatter_value_host(particles(particle_stride * i + particle_x) / dx, 1.0_real32, den)
     end do
     do i = 0, ni - 1
       den(i) = den(i) * real(spwt / dx, real32)
@@ -302,10 +334,9 @@ contains
     !$omp target update to(field(0:ni - 1))
   end subroutine compute_ef
 
-  subroutine push_species(npart, xpos, vel, alive, qm, field)
+  subroutine push_species(npart, particles, qm, field)
     integer, intent(in) :: npart
-    real(real64), intent(inout) :: xpos(0:), vel(0:)
-    integer, intent(inout) :: alive(0:)
+    real(real64), intent(inout) :: particles(0:)
     real(real64), intent(in) :: qm
     real(real64), intent(in) :: field(0:)
     integer :: i
@@ -313,21 +344,24 @@ contains
 
     !$omp target teams distribute parallel do thread_limit(threads_per_block) private(lc, part_ef)
     do i = 0, npart - 1
-      if (alive(i) /= 0) then
-        lc = xpos(i) / dx
+      if (particles(particle_stride * i + particle_alive) /= 0.0_real64) then
+        lc = particles(particle_stride * i + particle_x) / dx
         part_ef = gather_value(lc, field)
-        vel(i) = vel(i) + dt * qm * part_ef
-        xpos(i) = xpos(i) + dt * vel(i)
-        if (xpos(i) < x0 .or. xpos(i) >= xmax) alive(i) = 0
+        particles(particle_stride * i + particle_v) = &
+          particles(particle_stride * i + particle_v) + dt * qm * part_ef
+        particles(particle_stride * i + particle_x) = &
+          particles(particle_stride * i + particle_x) + &
+          dt * particles(particle_stride * i + particle_v)
+        if (particles(particle_stride * i + particle_x) < x0 .or. &
+            particles(particle_stride * i + particle_x) >= xmax) &
+          particles(particle_stride * i + particle_alive) = 0.0_real64
       end if
     end do
   end subroutine push_species
 
-  subroutine rewind_species(npart, xpos, vel, alive, qm, field)
+  subroutine rewind_species(npart, particles, qm, field)
     integer, intent(in) :: npart
-    real(real64), intent(in) :: xpos(0:)
-    real(real64), intent(inout) :: vel(0:)
-    integer, intent(in) :: alive(0:)
+    real(real64), intent(inout) :: particles(0:)
     real(real64), intent(in) :: qm
     real(real64), intent(in) :: field(0:)
     integer :: i
@@ -335,10 +369,11 @@ contains
 
     !$omp target teams distribute parallel do thread_limit(threads_per_block) private(lc, part_ef)
     do i = 0, npart - 1
-      if (alive(i) /= 0) then
-        lc = xpos(i) / dx
+      if (particles(particle_stride * i + particle_alive) /= 0.0_real64) then
+        lc = particles(particle_stride * i + particle_x) / dx
         part_ef = gather_value(lc, field)
-        vel(i) = vel(i) - 0.5_real64 * dt * qm * part_ef
+        particles(particle_stride * i + particle_v) = &
+          particles(particle_stride * i + particle_v) - 0.5_real64 * dt * qm * part_ef
       end if
     end do
   end subroutine rewind_species

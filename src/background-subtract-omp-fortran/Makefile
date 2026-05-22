@@ -1,4 +1,5 @@
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  = yes
 DEBUG     = no
 DEVICE    = gpu
@@ -7,7 +8,8 @@ LAUNCHER  =
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+cxxsource = mt19937_rng.cpp
+obj     = $(source:.f90=.o) $(cxxsource:.cpp=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
 
@@ -29,10 +31,13 @@ LDFLAGS =
 BENCHMARK_ARGS ?= 64 64 0 3
 
 $(program): $(obj)
-	$(FC) $(FFLAGS) $(obj) -o $@ $(LDFLAGS)
+	$(FC) $(FFLAGS) $(obj) -o $@ $(LDFLAGS) -lstdc++
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -O3 -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

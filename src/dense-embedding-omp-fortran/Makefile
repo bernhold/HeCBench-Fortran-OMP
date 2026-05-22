@@ -1,4 +1,5 @@
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  ?= yes
 DEBUG     ?= no
 DEVICE    ?= gpu
@@ -7,7 +8,8 @@ LAUNCHER  ?=
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+cpp_source = dense_embedding_rng.cpp
+obj     = $(source:.f90=.o) $(cpp_source:.cpp=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
 
@@ -25,13 +27,16 @@ else
   FFLAGS += -fopenmp
 endif
 
-LDFLAGS =
+LDFLAGS = -lstdc++
 
 $(program): $(obj)
 	$(FC) $(FFLAGS) $(obj) -o $@ $(LDFLAGS)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(EXTRA_CXXFLAGS) -O3 -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

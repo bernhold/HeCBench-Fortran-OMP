@@ -81,23 +81,42 @@ program main
 
 contains
 
-  subroutine stencil_kernel(n, padded_n, input, output)
+  subroutine stencil_kernel(n, padded_n, a, b)
     integer(int32), intent(in) :: n, padded_n
-    integer(int32), intent(in) :: input(0:padded_n - 1)
-    integer(int32), intent(out) :: output(0:n - 1)
-    integer(int32) :: idx, offset, source_idx, result
+    integer(int32), intent(in) :: a(0:padded_n - 1)
+    integer(int32), intent(out) :: b(0:n - 1)
+    integer(int32) :: i, j, gindex, offset, result
+    integer(int32) :: temp(0:block_size + 2_int32 * radius - 1)
 
-    !$omp target teams distribute parallel do thread_limit(block_size) map(to: input(0:padded_n - 1)) map(from: output(0:n - 1)) &
-    !$omp& private(offset, source_idx, result)
-    do idx = 0, n - 1
-      result = 0_int32
-      do offset = -radius, radius
-        source_idx = idx + offset
-        if (source_idx >= 0_int32) result = result + input(source_idx)
+    !$omp target teams distribute map(to: a(0:padded_n - 1)) map(from: b(0:n - 1)) &
+    !$omp& private(temp, j, gindex, offset, result)
+    do i = 0, n - 1, block_size
+      !$omp parallel do schedule(static,1) private(gindex)
+      do j = 0, block_size - 1
+        gindex = i + j
+        temp(j + radius) = a(gindex)
+        if (j < radius) then
+          if (gindex < radius) then
+            temp(j) = 0_int32
+          else
+            temp(j) = a(gindex - radius)
+          end if
+          temp(j + radius + block_size) = a(gindex + block_size)
+        end if
       end do
-      output(idx) = result
+      !$omp end parallel do
+
+      !$omp parallel do schedule(static,1) private(result, offset)
+      do j = 0, block_size - 1
+        result = 0_int32
+        do offset = -radius, radius
+          result = result + temp(j + radius + offset)
+        end do
+        b(i + j) = result
+      end do
+      !$omp end parallel do
     end do
-    !$omp end target teams distribute parallel do
+    !$omp end target teams distribute
   end subroutine stencil_kernel
 
 end program main

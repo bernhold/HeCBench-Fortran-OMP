@@ -1,6 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_char, c_int, c_null_char
   use omp_lib
   implicit none
 
@@ -12,7 +12,7 @@ program main
   integer(c_int) :: c_rand_value
   real(real32), allocatable :: h_image(:), h_output(:), d_output(:)
   real(real64) :: start_time, end_time, avg_time
-  logical :: ok
+  integer :: status
 
   interface
     subroutine c_srand(seed) bind(C, name="srand")
@@ -24,6 +24,12 @@ program main
       import :: c_int
       integer(c_int) :: r
     end function c_rand
+
+    function c_atoi(str) bind(C, name="atoi") result(r)
+      import :: c_char, c_int
+      character(kind=c_char), intent(in) :: str(*)
+      integer(c_int) :: r
+    end function c_atoi
   end interface
 
   call get_command_argument(0, arg0)
@@ -36,12 +42,10 @@ program main
   call get_command_argument(2, arg2)
   call get_command_argument(3, arg3)
   call get_command_argument(4, arg4)
-  read(arg1, *) i_img_width
-  read(arg2, *) i_img_height
-  read(arg3, *) i_img_count
-  read(arg4, *) repeat
-
-  if (i_img_width <= 0 .or. i_img_height <= 0 .or. i_img_count <= 0 .or. repeat <= 0) stop 1
+  i_img_width = c_atoi(trim(arg1) // c_null_char)
+  i_img_height = c_atoi(trim(arg2) // c_null_char)
+  i_img_count = c_atoi(trim(arg3) // c_null_char)
+  repeat = c_atoi(trim(arg4) // c_null_char)
 
   hstride = 2
   vstride = 2
@@ -75,27 +79,27 @@ program main
   end do
   end_time = omp_get_wtime()
   avg_time = (end_time - start_time) / real(repeat, real64)
-  print '(A,F8.6,A)', 'Average kernel execution time: ', avg_time, ' (s)'
+  print '(A,F0.6,A)', 'Average kernel execution time: ', avg_time, ' (s)'
   !$omp end target data
 
   call maxpool_host(h_image, h_output, i_img_width, i_img_height, i_img_count, o_img_width, o_img_height)
 
-  ok = .true.
+  status = 0
   do i = 1, total_output
     if (h_output(i) /= d_output(i)) then
-      ok = .false.
+      status = 1
       exit
     end if
   end do
 
-  if (ok) then
+  if (status == 0) then
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
   deallocate(h_image, h_output, d_output)
+  if (status /= 0) stop status
 
 contains
 

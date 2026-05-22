@@ -1,6 +1,6 @@
 program main
   use, intrinsic :: iso_fortran_env, only : int64, real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_int, c_float, c_int64_t
   use omp_lib
   implicit none
 
@@ -10,13 +10,13 @@ program main
       integer(c_int), value :: seed
     end subroutine c_srand
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine silu_make_random_float(array, n) bind(C, name='silu_make_random_float')
+      import :: c_float, c_int64_t
+      real(c_float), intent(out) :: array(*)
+      integer(c_int64_t), value :: n
+    end subroutine silu_make_random_float
   end interface
 
-  integer(c_int), parameter :: c_rand_max = 2147483647_c_int
   integer, parameter :: block_sizes(5) = [64, 128, 256, 512, 1024]
   integer :: b, c, h, w, repeat, bs, i
   integer(int64) :: n
@@ -38,12 +38,8 @@ program main
 
   allocate(x(n), dout(n), out_ref(n), dx_ref(n), d_out(n), d_dx(n))
   call c_srand(0_c_int)
-  do i = 1, int(n)
-    x(i) = c_signed_unit_float()
-  end do
-  do i = 1, int(n)
-    dout(i) = c_signed_unit_float()
-  end do
+  call silu_make_random_float(x, n)
+  call silu_make_random_float(dout, n)
 
   call silu_forward_reference(x, out_ref, n)
   call silu_backward_reference(dout, x, dx_ref, n)
@@ -86,7 +82,7 @@ program main
   do i = 1, size(block_sizes)
     bs = block_sizes(i)
     elapsed_ms = benchmark_forward(x, d_out, n, bs, repeat)
-    print '(A,I4,A,F0.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
+    print '(A,I4,A,F6.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
   end do
 
   print '(A)'
@@ -94,7 +90,7 @@ program main
   do i = 1, size(block_sizes)
     bs = block_sizes(i)
     elapsed_ms = benchmark_forward2(x, d_out, n, bs, repeat)
-    print '(A,I4,A,F0.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
+    print '(A,I4,A,F6.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
   end do
 
   print '(A)'
@@ -102,7 +98,7 @@ program main
   do i = 1, size(block_sizes)
     bs = block_sizes(i)
     elapsed_ms = benchmark_backward(dout, x, d_dx, n, bs, repeat)
-    print '(A,I4,A,F0.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
+    print '(A,I4,A,F6.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
   end do
 
   print '(A)'
@@ -110,7 +106,7 @@ program main
   do i = 1, size(block_sizes)
     bs = block_sizes(i)
     elapsed_ms = benchmark_backward2(dout, x, d_dx, n, bs, repeat)
-    print '(A,I4,A,F0.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
+    print '(A,I4,A,F6.4,A)', 'block_size ', bs, ' | time ', elapsed_ms, ' ms'
   end do
   !$omp end target data
 
@@ -125,13 +121,6 @@ contains
     call get_command_argument(position, buffer)
     read(buffer, *) read_arg
   end function read_arg
-
-  real(real32) function c_signed_unit_float()
-    integer(c_int) :: value
-
-    value = c_rand()
-    c_signed_unit_float = 2.0_real32 * (real(value, real32) / real(c_rand_max, real32)) - 1.0_real32
-  end function c_signed_unit_float
 
   real(real32) function silu_value(xv)
     real(real32), intent(in) :: xv
@@ -170,8 +159,9 @@ contains
     real(real32), intent(out) :: out(:)
     integer(int64), intent(in) :: n
     integer, intent(in) :: block_size
-    integer :: i
-    !$omp target teams distribute parallel do thread_limit(block_size)
+    integer :: i, num_teams
+    num_teams = get_num_teams(n, block_size)
+    !$omp target teams distribute parallel do num_teams(num_teams) thread_limit(block_size)
     do i = 1, int(n)
       out(i) = silu_value(x(i))
     end do
@@ -183,21 +173,25 @@ contains
     real(real32), intent(out) :: out(:)
     integer(int64), intent(in) :: n
     integer, intent(in) :: block_size
-    integer :: i, k, vec_count, tail_start
+    integer :: i, k, vec_count, tail_start, num_teams, tail_threads
     vec_count = int(n) / 4
     tail_start = 4 * vec_count + 1
-    !$omp target teams distribute parallel do thread_limit(block_size) private(k)
+    num_teams = get_num_teams(int(vec_count, int64), block_size)
+    !$omp target teams distribute parallel do num_teams(num_teams) thread_limit(block_size) private(k)
     do i = 0, vec_count - 1
       do k = 1, 4
         out(4 * i + k) = silu_value(x(4 * i + k))
       end do
     end do
     !$omp end target teams distribute parallel do
-    !$omp target teams distribute parallel do thread_limit(block_size)
-    do i = tail_start, int(n)
-      out(i) = silu_value(x(i))
-    end do
-    !$omp end target teams distribute parallel do
+    tail_threads = int(n) - 4 * vec_count
+    if (tail_threads > 0) then
+      !$omp target teams distribute parallel do num_teams(1) thread_limit(tail_threads)
+      do i = tail_start, int(n)
+        out(i) = silu_value(x(i))
+      end do
+      !$omp end target teams distribute parallel do
+    end if
   end subroutine silu_forward2
 
   subroutine silu_backward(dout, x, dx, n, block_size)
@@ -205,8 +199,9 @@ contains
     real(real32), intent(out) :: dx(:)
     integer(int64), intent(in) :: n
     integer, intent(in) :: block_size
-    integer :: i
-    !$omp target teams distribute parallel do thread_limit(block_size)
+    integer :: i, num_teams
+    num_teams = get_num_teams(n, block_size)
+    !$omp target teams distribute parallel do num_teams(num_teams) thread_limit(block_size)
     do i = 1, int(n)
       dx(i) = dout(i) * silu_grad(x(i))
     end do
@@ -218,22 +213,32 @@ contains
     real(real32), intent(out) :: dx(:)
     integer(int64), intent(in) :: n
     integer, intent(in) :: block_size
-    integer :: i, k, vec_count, tail_start
+    integer :: i, k, vec_count, tail_start, num_teams, tail_threads
     vec_count = int(n) / 4
     tail_start = 4 * vec_count + 1
-    !$omp target teams distribute parallel do thread_limit(block_size) private(k)
+    num_teams = get_num_teams(int(vec_count, int64), block_size)
+    !$omp target teams distribute parallel do num_teams(num_teams) thread_limit(block_size) private(k)
     do i = 0, vec_count - 1
       do k = 1, 4
         dx(4 * i + k) = dout(4 * i + k) * silu_grad(x(4 * i + k))
       end do
     end do
     !$omp end target teams distribute parallel do
-    !$omp target teams distribute parallel do thread_limit(block_size)
-    do i = tail_start, int(n)
-      dx(i) = dout(i) * silu_grad(x(i))
-    end do
-    !$omp end target teams distribute parallel do
+    tail_threads = int(n) - 4 * vec_count
+    if (tail_threads > 0) then
+      !$omp target teams distribute parallel do num_teams(1) thread_limit(tail_threads)
+      do i = tail_start, int(n)
+        dx(i) = dout(i) * silu_grad(x(i))
+      end do
+      !$omp end target teams distribute parallel do
+    end if
   end subroutine silu_backward2
+
+  integer function get_num_teams(num_elements, num_threads)
+    integer(int64), intent(in) :: num_elements
+    integer, intent(in) :: num_threads
+    get_num_teams = int((num_elements + int(num_threads, int64) - 1_int64) / int(num_threads, int64))
+  end function get_num_teams
 
   subroutine validate_result(device_result, cpu_reference, n)
     real(real32), intent(inout) :: device_result(:)

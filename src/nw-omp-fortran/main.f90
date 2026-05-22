@@ -1,7 +1,7 @@
 program nw_omp_fortran
   use, intrinsic :: iso_c_binding, only: c_int
   use, intrinsic :: iso_fortran_env, only: int32, real64
-  use omp_lib, only: omp_get_wtime
+  use omp_lib, only: omp_get_wtime, omp_get_team_num, omp_get_thread_num
   implicit none
 
   interface
@@ -65,7 +65,7 @@ program nw_omp_fortran
   if (ios /= 0) call usage()
   call get_command_argument(3, arg)
   read(arg, *, iostat=ios) repeat
-  if (ios /= 0 .or. repeat <= 0) call usage()
+  if (ios /= 0) call usage()
 
   if (mod(dim, block_size) /= 0) then
     write(0, '(A)') 'The dimension values must be a multiple of 16'
@@ -156,24 +156,150 @@ contains
     integer(int32), intent(inout) :: items(0:)
     integer(int32), intent(in) :: reference(0:)
     integer, intent(in) :: max_cols, penalty
-    integer :: blk, bx, block_width
+    integer :: blk, block_width
 
     block_width = (max_cols - 1) / block_size
 
     do blk = 1, block_width
-      !$omp target teams distribute parallel do thread_limit(128)
-      do bx = 0, blk - 1
-        call compute_block(items, reference, max_cols, penalty, bx, blk - 1 - bx)
-      end do
-      !$omp end target teams distribute parallel do
+      !$omp target teams num_teams(blk) thread_limit(block_size)
+      block
+        integer(int32) :: input_itemsets_l(0:(block_size + 1) * (block_size + 1) - 1)
+        integer(int32) :: reference_l(0:block_size * block_size - 1)
+
+        !$omp parallel
+        block
+          integer :: bx, tx, ty, m, base, b_index_x, b_index_y
+          integer :: index, index_n, index_w, index_nw, t_index_x, t_index_y
+
+          bx = omp_get_team_num()
+          tx = omp_get_thread_num()
+
+          base = 0
+          b_index_x = bx
+          b_index_y = blk - 1 - bx
+
+          index = base + max_cols * block_size * b_index_y + block_size * b_index_x + tx + (max_cols + 1)
+          index_n = base + max_cols * block_size * b_index_y + block_size * b_index_x + tx + 1
+          index_w = base + max_cols * block_size * b_index_y + block_size * b_index_x + max_cols
+          index_nw = base + max_cols * block_size * b_index_y + block_size * b_index_x
+
+          if (tx == 0) input_itemsets_l(tx * (block_size + 1)) = items(index_nw + tx)
+
+          do ty = 0, block_size - 1
+            reference_l(ty * block_size + tx) = reference(index + max_cols * ty)
+          end do
+
+          input_itemsets_l((tx + 1) * (block_size + 1)) = items(index_w + max_cols * tx)
+          input_itemsets_l(tx + 1) = items(index_n)
+
+          !$omp barrier
+
+          do m = 0, block_size - 1
+            if (tx <= m) then
+              t_index_x = tx + 1
+              t_index_y = m - tx + 1
+
+              input_itemsets_l(t_index_y * (block_size + 1) + t_index_x) = max( &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x - 1) + &
+                  reference_l((t_index_y - 1) * block_size + t_index_x - 1), &
+                input_itemsets_l(t_index_y * (block_size + 1) + t_index_x - 1) - penalty, &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x) - penalty)
+            end if
+            !$omp barrier
+          end do
+
+          do m = block_size - 2, 0, -1
+            if (tx <= m) then
+              t_index_x = tx + block_size - m
+              t_index_y = block_size - tx
+
+              input_itemsets_l(t_index_y * (block_size + 1) + t_index_x) = max( &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x - 1) + &
+                  reference_l((t_index_y - 1) * block_size + t_index_x - 1), &
+                input_itemsets_l(t_index_y * (block_size + 1) + t_index_x - 1) - penalty, &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x) - penalty)
+            end if
+            !$omp barrier
+          end do
+
+          do ty = 0, block_size - 1
+            items(index + max_cols * ty) = input_itemsets_l((ty + 1) * (block_size + 1) + tx + 1)
+          end do
+        end block
+        !$omp end parallel
+      end block
+      !$omp end target teams
     end do
 
     do blk = block_width - 1, 1, -1
-      !$omp target teams distribute parallel do thread_limit(128)
-      do bx = 0, blk - 1
-        call compute_block(items, reference, max_cols, penalty, bx + block_width - blk, block_width - bx - 1)
-      end do
-      !$omp end target teams distribute parallel do
+      !$omp target teams num_teams(blk) thread_limit(block_size)
+      block
+        integer(int32) :: input_itemsets_l(0:(block_size + 1) * (block_size + 1) - 1)
+        integer(int32) :: reference_l(0:block_size * block_size - 1)
+
+        !$omp parallel
+        block
+          integer :: bx, tx, ty, m, base, b_index_x, b_index_y
+          integer :: index, index_n, index_w, index_nw, t_index_x, t_index_y
+
+          bx = omp_get_team_num()
+          tx = omp_get_thread_num()
+
+          base = 0
+          b_index_x = bx + block_width - blk
+          b_index_y = block_width - bx - 1
+
+          index = base + max_cols * block_size * b_index_y + block_size * b_index_x + tx + (max_cols + 1)
+          index_n = base + max_cols * block_size * b_index_y + block_size * b_index_x + tx + 1
+          index_w = base + max_cols * block_size * b_index_y + block_size * b_index_x + max_cols
+          index_nw = base + max_cols * block_size * b_index_y + block_size * b_index_x
+
+          if (tx == 0) input_itemsets_l(tx * (block_size + 1)) = items(index_nw)
+
+          do ty = 0, block_size - 1
+            reference_l(ty * block_size + tx) = reference(index + max_cols * ty)
+          end do
+
+          input_itemsets_l((tx + 1) * (block_size + 1)) = items(index_w + max_cols * tx)
+          input_itemsets_l(tx + 1) = items(index_n)
+
+          !$omp barrier
+
+          do m = 0, block_size - 1
+            if (tx <= m) then
+              t_index_x = tx + 1
+              t_index_y = m - tx + 1
+
+              input_itemsets_l(t_index_y * (block_size + 1) + t_index_x) = max( &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x - 1) + &
+                  reference_l((t_index_y - 1) * block_size + t_index_x - 1), &
+                input_itemsets_l(t_index_y * (block_size + 1) + t_index_x - 1) - penalty, &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x) - penalty)
+            end if
+            !$omp barrier
+          end do
+
+          do m = block_size - 2, 0, -1
+            if (tx <= m) then
+              t_index_x = tx + block_size - m
+              t_index_y = block_size - tx
+
+              input_itemsets_l(t_index_y * (block_size + 1) + t_index_x) = max( &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x - 1) + &
+                  reference_l((t_index_y - 1) * block_size + t_index_x - 1), &
+                input_itemsets_l(t_index_y * (block_size + 1) + t_index_x - 1) - penalty, &
+                input_itemsets_l((t_index_y - 1) * (block_size + 1) + t_index_x) - penalty)
+            end if
+            !$omp barrier
+          end do
+
+          do ty = 0, block_size - 1
+            items(index + ty * max_cols) = input_itemsets_l((ty + 1) * (block_size + 1) + tx + 1)
+          end do
+        end block
+        !$omp end parallel
+      end block
+      !$omp end target teams
     end do
   end subroutine nw_device
 

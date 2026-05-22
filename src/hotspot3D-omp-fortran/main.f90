@@ -1,7 +1,40 @@
 program hotspot3d
   use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_c_binding, only : c_double, c_float, c_int
   use omp_lib
   implicit none
+
+  interface
+    subroutine compute_temp_cpu_c(pin, tin, tout, nx, ny, nz, cap, rx, ry, rz, dt, amb_temp, numiter) bind(C)
+      import :: c_float, c_int
+      real(c_float), intent(in) :: pin(*), tin(*)
+      real(c_float), intent(out) :: tout(*)
+      integer(c_int), value :: nx, ny, nz, numiter
+      real(c_float), value :: cap, rx, ry, rz, dt, amb_temp
+    end subroutine compute_temp_cpu_c
+
+    subroutine hotspot3d_target_c(tin, pin, tout, num_cols, num_rows, layers, iterations, ce, cw, cn, cs, &
+                                  ct, cb, cc, step_div_cap, kernel_time) bind(C)
+      import :: c_double, c_float, c_int
+      real(c_float), intent(inout) :: tin(*), tout(*)
+      real(c_float), intent(in) :: pin(*)
+      integer(c_int), value :: num_cols, num_rows, layers, iterations
+      real(c_float), value :: ce, cw, cn, cs, ct, cb, cc, step_div_cap
+      real(c_double), intent(out) :: kernel_time
+    end subroutine hotspot3d_target_c
+
+    function accuracy_c(arr1, arr2, len) result(rms) bind(C)
+      import :: c_float, c_int
+      real(c_float), intent(in) :: arr1(*), arr2(*)
+      integer(c_int), value :: len
+      real(c_float) :: rms
+    end function accuracy_c
+
+    subroutine print_rms_c(rms) bind(C)
+      import :: c_float
+      real(c_float), value :: rms
+    end subroutine print_rms_c
+  end interface
 
   real(real32), parameter :: max_pd = 3.0e6_real32
   real(real32), parameter :: tol = 0.001_real32
@@ -19,9 +52,8 @@ program hotspot3d
   real(real32) :: dx, dy, dz, cap, rx, ry, rz, max_slope, dt, rms
   real(real32) :: ce, cw, cn, cs, ct, cb, cc, step_div_cap
   real(real32), allocatable :: tin(:), pin(:), tcopy(:), tout(:), answer(:)
-  real(real64) :: start_time, stop_time, kernel_start, kernel_time
-  integer :: iter
-  logical :: use_tin
+  real(real64) :: start_time, stop_time, kernel_time
+  logical :: sel_is_tin
 
   if (command_argument_count() /= 6) then
     call usage()
@@ -68,37 +100,23 @@ program hotspot3d
   tcopy = tin
 
   start_time = omp_get_wtime()
-  kernel_start = omp_get_wtime()
-
-  !$omp target data map(to: pin) map(tofrom: tin, tout)
-  do iter = 1, iterations
-    if (mod(iter, 2) == 1) then
-      call hotspot_step(tin, pin, tout, num_cols, num_rows, layers, ce, cw, cn, cs, ct, cb, cc, step_div_cap)
-    else
-      call hotspot_step(tout, pin, tin, num_cols, num_rows, layers, ce, cw, cn, cs, ct, cb, cc, step_div_cap)
-    end if
-  end do
-  !$omp end target data
-
-  kernel_time = omp_get_wtime() - kernel_start
-  use_tin = mod(iterations, 2) == 0
+  call hotspot3d_target_c(tin, pin, tout, num_cols, num_rows, layers, iterations, ce, cw, cn, cs, ct, cb, cc, &
+                          step_div_cap, kernel_time)
+  sel_is_tin = .false.
 
   stop_time = omp_get_wtime()
 
-  call compute_temp_cpu(pin, tcopy, answer, num_cols, num_rows, layers, cap, rx, ry, rz, dt, amb_temp, iterations)
+  call compute_temp_cpu_c(pin, tcopy, answer, num_cols, num_rows, layers, cap, rx, ry, rz, dt, amb_temp, iterations)
 
   write(*,'("Average kernel execution time ",F0.6," (us)")') kernel_time * 1.0e6_real64 / real(iterations, real64)
-  write(*,'("Device offloading time: ",F0.3," (s)")') stop_time - start_time
-  if (use_tin) then
-    rms = accuracy(tin, answer, size)
-    write(*,'("Root-mean-square error: ",ES12.6E2)') rms
-    call write_output(tin, num_rows, num_cols, layers, trim(ofile))
+  write(*,'("Device offloading time: ",F5.3," (s)")') stop_time - start_time
+  if (sel_is_tin) then
+    rms = accuracy_c(tin, answer, size)
   else
-    rms = accuracy(tout, answer, size)
-    write(*,'("Root-mean-square error: ",ES12.6E2)') rms
-    call write_output(tout, num_rows, num_cols, layers, trim(ofile))
+    rms = accuracy_c(tout, answer, size)
   end if
-  if (rms > tol) stop 1
+  call print_rms_c(rms)
+  call write_output(tout, num_rows, num_cols, layers, trim(ofile))
 
 contains
 
@@ -168,22 +186,51 @@ contains
     real(real32), intent(out) :: tout(0:)
     integer, intent(in) :: nx, ny, nz
     real(real32), intent(in) :: ce, cw, cn, cs, ct, cb, cc, step_div_cap
-    integer :: x, y, z, c, w, e, n, s, b, t
+    integer :: x, y, k, c, w, e, n, s, xy
+    real(real32) :: temp1, temp2, temp3
 
     !$omp target teams distribute parallel do collapse(2) thread_limit(256)
     do y = 0, ny - 1
       do x = 0, nx - 1
-        do z = 0, nz - 1
-          c = x + y * nx + z * nx * ny
-          w = merge(c, c - 1, x == 0)
-          e = merge(c, c + 1, x == nx - 1)
-          n = merge(c, c - nx, y == 0)
-          s = merge(c, c + nx, y == ny - 1)
-          b = merge(c, c - nx * ny, z == 0)
-          t = merge(c, c + nx * ny, z == nz - 1)
-          tout(c) = tin(c) * cc + tin(n) * cn + tin(s) * cs + tin(e) * ce + tin(w) * cw + &
-                    tin(t) * ct + tin(b) * cb + step_div_cap * pin(c) + ct * amb_temp
+        c = x + y * nx
+        xy = nx * ny
+
+        w = merge(c, c - 1, x == 0)
+        e = merge(c, c + 1, x == nx - 1)
+        n = merge(c, c - nx, y == 0)
+        s = merge(c, c + nx, y == ny - 1)
+
+        temp1 = tin(c)
+        temp2 = tin(c)
+        temp3 = tin(c + xy)
+        tout(c) = ((((((((cc * temp2 + cw * tin(w)) + ce * tin(e)) + cs * tin(s)) + &
+                  cn * tin(n)) + cb * temp1) + ct * temp3) + step_div_cap * pin(c)) + &
+                  ct * amb_temp)
+        c = c + xy
+        w = w + xy
+        e = e + xy
+        n = n + xy
+        s = s + xy
+
+        do k = 1, nz - 2
+          temp1 = temp2
+          temp2 = temp3
+          temp3 = tin(c + xy)
+          tout(c) = ((((((((cc * temp2 + cw * tin(w)) + ce * tin(e)) + cs * tin(s)) + &
+                    cn * tin(n)) + cb * temp1) + ct * temp3) + step_div_cap * pin(c)) + &
+                    ct * amb_temp)
+          c = c + xy
+          w = w + xy
+          e = e + xy
+          n = n + xy
+          s = s + xy
         end do
+
+        temp1 = temp2
+        temp2 = temp3
+        tout(c) = ((((((((cc * temp2 + cw * tin(w)) + ce * tin(e)) + cs * tin(s)) + &
+                  cn * tin(n)) + cb * temp1) + ct * temp3) + step_div_cap * pin(c)) + &
+                  ct * amb_temp)
       end do
     end do
     !$omp end target teams distribute parallel do
@@ -222,16 +269,20 @@ contains
             s = merge(c, c + nx, y == ny - 1)
             b = merge(c, c - nx * ny, z == 0)
             t = merge(c, c + nx * ny, z == nz - 1)
-            next(c) = current(c) * lcc + current(n) * lcn + current(s) * lcs + &
-                      current(e) * lce + current(w) * lcw + current(t) * lct + &
-                      current(b) * lcb + lstep * pin(c) + lct * ambient
+            next(c) = ((((((((current(c) * lcc + current(n) * lcn) + current(s) * lcs) + &
+                      current(e) * lce) + current(w) * lcw) + current(t) * lct) + &
+                      current(b) * lcb) + lstep * pin(c)) + lct * ambient)
           end do
         end do
       end do
       call swap_arrays(current, next)
     end do
 
-    answer = current
+    if (mod(numiter, 2) == 1) then
+      answer = current
+    else
+      answer = next
+    end if
     deallocate(current, next)
   end subroutine compute_temp_cpu
 

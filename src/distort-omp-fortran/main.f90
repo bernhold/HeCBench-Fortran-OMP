@@ -1,8 +1,11 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_fortran_env, only : int8, real32, real64
   use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
+
+  integer, parameter :: pixel_stride = 4
+  integer, parameter :: pixel_x = 1, pixel_y = 2, pixel_z = 3
 
   interface
     subroutine c_srand(seed) bind(C, name="srand")
@@ -33,9 +36,7 @@ program main
   integer :: width, height, repeat_count, image_size
   real(real32) :: coeff, new_center_x, new_center_y, xshift_2, yshift_2
   type(properties_t) :: prop
-  integer(int32), allocatable :: src_r(:), src_g(:), src_b(:)
-  integer(int32), allocatable :: dst_r(:), dst_g(:), dst_b(:)
-  integer(int32), allocatable :: ref_r(:), ref_g(:), ref_b(:)
+  integer(int8), allocatable :: h_src(:,:), h_dst(:,:), r_dst(:,:)
   integer :: ex, ey, ez
 
   call get_command_argument(0, arg0)
@@ -67,19 +68,19 @@ program main
   prop%yscale = (real(prop%height, real32) - prop%yshift - yshift_2) / real(prop%height, real32)
 
   image_size = width * height
-  allocate(src_r(image_size), src_g(image_size), src_b(image_size))
-  allocate(dst_r(image_size), dst_g(image_size), dst_b(image_size))
-  allocate(ref_r(image_size), ref_g(image_size), ref_b(image_size))
+  allocate(h_src(pixel_stride, image_size))
+  allocate(h_dst(pixel_stride, image_size))
+  allocate(r_dst(pixel_stride, image_size))
 
   call c_srand(123_c_int)
-  call fill_image(src_r, src_g, src_b)
+  call fill_image(h_src)
 
-  call run_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop, repeat_count)
-  call reference(src_r, src_g, src_b, ref_r, ref_g, ref_b, prop)
-  call max_error(dst_r, dst_g, dst_b, ref_r, ref_g, ref_b, ex, ey, ez)
+  call run_distort(h_src, h_dst, prop, repeat_count)
+  call reference(h_src, r_dst, prop)
+  call max_error(h_dst, r_dst, ex, ey, ez)
   write(*,'(A,I0,1X,I0,1X,I0)') 'Max error of each channel: ', ex, ey, ez
 
-  deallocate(src_r, src_g, src_b, dst_r, dst_g, dst_b, ref_r, ref_g, ref_b)
+  deallocate(h_src, h_dst, r_dst)
 
 contains
 
@@ -99,14 +100,15 @@ contains
     end if
   end function calc_shift
 
-  subroutine fill_image(src_r, src_g, src_b)
-    integer(int32), intent(out) :: src_r(:), src_g(:), src_b(:)
+  subroutine fill_image(src)
+    integer(int8), intent(out) :: src(:, :)
     integer :: i
 
-    do i = 1, size(src_r)
-      src_r(i) = next_rand_mod(256)
-      src_g(i) = next_rand_mod(256)
-      src_b(i) = next_rand_mod(256)
+    src = 0_int8
+    do i = 1, size(src, 2)
+      src(pixel_x, i) = to_byte(next_rand_mod(256))
+      src(pixel_y, i) = to_byte(next_rand_mod(256))
+      src(pixel_z, i) = to_byte(next_rand_mod(256))
     end do
   end subroutine fill_image
 
@@ -118,66 +120,62 @@ contains
     next_rand_mod = modulo(value, divisor)
   end function next_rand_mod
 
-  subroutine run_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop, repeat_count)
-    integer(int32), intent(in) :: src_r(:), src_g(:), src_b(:)
-    integer(int32), intent(out) :: dst_r(:), dst_g(:), dst_b(:)
+  subroutine run_distort(src, dst, prop, repeat_count)
+    integer(int8), intent(in) :: src(:, :)
+    integer(int8), intent(out) :: dst(:, :)
     type(properties_t), intent(in) :: prop
     integer, intent(in) :: repeat_count
     integer :: iter, image_size
     real(real64) :: start_time, elapsed_ms
 
     image_size = prop%width * prop%height
-    !$omp target data map(to: src_r(1:image_size), src_g(1:image_size), src_b(1:image_size), prop) &
-    !$omp& map(from: dst_r(1:image_size), dst_g(1:image_size), dst_b(1:image_size))
+    !$omp target data map(to: src(1:pixel_stride,1:image_size), prop) &
+    !$omp& map(from: dst(1:pixel_stride,1:image_size))
     start_time = omp_get_wtime()
     do iter = 1, repeat_count
-      call barrel_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop)
+      call barrel_distort(src, dst, prop)
     end do
     elapsed_ms = (omp_get_wtime() - start_time) * 1.0e3_real64 / real(repeat_count, real64)
-    write(*,'(A,F0.6,A)') 'Average kernel execution time: ', elapsed_ms, ' (ms)'
+    write(*,'(A,F8.6,A)') 'Average kernel execution time: ', elapsed_ms, ' (ms)'
     !$omp end target data
   end subroutine run_distort
 
-  subroutine barrel_distort(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop)
-    integer(int32), intent(in) :: src_r(:), src_g(:), src_b(:)
-    integer(int32), intent(out) :: dst_r(:), dst_g(:), dst_b(:)
+  subroutine barrel_distort(src, dst, prop)
+    integer(int8), intent(in) :: src(:, :)
+    integer(int8), intent(out) :: dst(:, :)
     type(properties_t), intent(in) :: prop
     integer :: row, col, idx
     real(real32) :: radial_x, radial_y
-    integer(int32) :: rr, gg, bb
+    integer(int8) :: temp(pixel_stride)
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(idx, radial_x, radial_y, rr, gg, bb)
+    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(idx, radial_x, radial_y, temp)
     do row = 0, prop%height - 1
       do col = 0, prop%width - 1
         radial_x = get_radial_x(real(col, real32), real(row, real32), prop)
         radial_y = get_radial_y(real(col, real32), real(row, real32), prop)
-        call sample_image(src_r, src_g, src_b, radial_y, radial_x, rr, gg, bb, prop)
+        call sample_image(src, radial_y, radial_x, temp, prop)
         idx = row * prop%width + col + 1
-        dst_r(idx) = rr
-        dst_g(idx) = gg
-        dst_b(idx) = bb
+        dst(:, idx) = temp
       end do
     end do
     !$omp end target teams distribute parallel do
   end subroutine barrel_distort
 
-  subroutine reference(src_r, src_g, src_b, dst_r, dst_g, dst_b, prop)
-    integer(int32), intent(in) :: src_r(:), src_g(:), src_b(:)
-    integer(int32), intent(out) :: dst_r(:), dst_g(:), dst_b(:)
+  subroutine reference(src, dst, prop)
+    integer(int8), intent(in) :: src(:, :)
+    integer(int8), intent(out) :: dst(:, :)
     type(properties_t), intent(in) :: prop
     integer :: row, col, idx
     real(real32) :: radial_x, radial_y
-    integer(int32) :: rr, gg, bb
+    integer(int8) :: temp(pixel_stride)
 
     do row = 0, prop%height - 1
       do col = 0, prop%width - 1
         radial_x = get_radial_x(real(col, real32), real(row, real32), prop)
         radial_y = get_radial_y(real(col, real32), real(row, real32), prop)
-        call sample_image(src_r, src_g, src_b, radial_y, radial_x, rr, gg, bb, prop)
+        call sample_image(src, radial_y, radial_x, temp, prop)
         idx = row * prop%width + col + 1
-        dst_r(idx) = rr
-        dst_g(idx) = gg
-        dst_b(idx) = bb
+        dst(:, idx) = temp
       end do
     end do
   end subroutine reference
@@ -206,10 +204,10 @@ contains
        (scaled_y - prop%center_y) * (scaled_y - prop%center_y)))
   end function get_radial_y
 
-  subroutine sample_image(src_r, src_g, src_b, idx0, idx1, rr, gg, bb, prop)
-    integer(int32), intent(in) :: src_r(:), src_g(:), src_b(:)
+  subroutine sample_image(src, idx0, idx1, result, prop)
+    integer(int8), intent(in) :: src(:, :)
     real(real32), intent(in) :: idx0, idx1
-    integer(int32), intent(out) :: rr, gg, bb
+    integer(int8), intent(out) :: result(:)
     type(properties_t), intent(in) :: prop
     integer :: idx0_floor, idx0_ceil, idx1_floor, idx1_ceil
     integer :: i1, i2, i3, i4
@@ -217,9 +215,7 @@ contains
 
     if (idx0 < 0.0_real32 .or. idx1 < 0.0_real32 .or. &
         idx0 > real(prop%height - 1, real32) .or. idx1 > real(prop%width - 1, real32)) then
-      rr = 0
-      gg = 0
-      bb = 0
+      result = 0_int8
       return
     end if
 
@@ -234,18 +230,22 @@ contains
     x = idx0 - real(idx0_floor, real32)
     y = idx1 - real(idx1_floor, real32)
 
-    r_value = real(src_r(i1), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
-      real(src_r(i2), real32) * (1.0_real32 - x) * y + real(src_r(i3), real32) * x * y + &
-      real(src_r(i4), real32) * x * (1.0_real32 - y)
-    g_value = real(src_g(i1), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
-      real(src_g(i2), real32) * (1.0_real32 - x) * y + real(src_g(i3), real32) * x * y + &
-      real(src_g(i4), real32) * x * (1.0_real32 - y)
-    b_value = real(src_b(i1), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
-      real(src_b(i2), real32) * (1.0_real32 - x) * y + real(src_b(i3), real32) * x * y + &
-      real(src_b(i4), real32) * x * (1.0_real32 - y)
-    rr = int(r_value, int32)
-    gg = int(g_value, int32)
-    bb = int(b_value, int32)
+    r_value = real(unsigned_byte(src(pixel_x, i1)), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
+      real(unsigned_byte(src(pixel_x, i2)), real32) * (1.0_real32 - x) * y + &
+      real(unsigned_byte(src(pixel_x, i3)), real32) * x * y + &
+      real(unsigned_byte(src(pixel_x, i4)), real32) * x * (1.0_real32 - y)
+    g_value = real(unsigned_byte(src(pixel_y, i1)), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
+      real(unsigned_byte(src(pixel_y, i2)), real32) * (1.0_real32 - x) * y + &
+      real(unsigned_byte(src(pixel_y, i3)), real32) * x * y + &
+      real(unsigned_byte(src(pixel_y, i4)), real32) * x * (1.0_real32 - y)
+    b_value = real(unsigned_byte(src(pixel_z, i1)), real32) * (1.0_real32 - x) * (1.0_real32 - y) + &
+      real(unsigned_byte(src(pixel_z, i2)), real32) * (1.0_real32 - x) * y + &
+      real(unsigned_byte(src(pixel_z, i3)), real32) * x * y + &
+      real(unsigned_byte(src(pixel_z, i4)), real32) * x * (1.0_real32 - y)
+    result(pixel_x) = to_byte(int(r_value))
+    result(pixel_y) = to_byte(int(g_value))
+    result(pixel_z) = to_byte(int(b_value))
+    if (size(result) >= pixel_stride) result(pixel_stride) = 0_int8
   end subroutine sample_image
 
   integer function floor_int(value)
@@ -260,18 +260,34 @@ contains
     ceiling_int = int(ceiling(value))
   end function ceiling_int
 
-  subroutine max_error(dst_r, dst_g, dst_b, ref_r, ref_g, ref_b, ex, ey, ez)
-    integer(int32), intent(in) :: dst_r(:), dst_g(:), dst_b(:), ref_r(:), ref_g(:), ref_b(:)
+  integer function unsigned_byte(value)
+    integer(int8), intent(in) :: value
+
+    unsigned_byte = int(value)
+    if (unsigned_byte < 0) unsigned_byte = unsigned_byte + 256
+  end function unsigned_byte
+
+  integer(int8) function to_byte(value)
+    integer, intent(in) :: value
+    integer :: wrapped
+
+    wrapped = modulo(value, 256)
+    if (wrapped > 127) wrapped = wrapped - 256
+    to_byte = int(wrapped, int8)
+  end function to_byte
+
+  subroutine max_error(dst, ref, ex, ey, ez)
+    integer(int8), intent(in) :: dst(:, :), ref(:, :)
     integer, intent(out) :: ex, ey, ez
     integer :: i
 
     ex = 0
     ey = 0
     ez = 0
-    do i = 1, size(dst_r)
-      ex = max(abs(dst_r(i) - ref_r(i)), ex)
-      ey = max(abs(dst_g(i) - ref_g(i)), ey)
-      ez = max(abs(dst_b(i) - ref_b(i)), ez)
+    do i = 1, size(dst, 2)
+      ex = max(abs(unsigned_byte(dst(pixel_x, i)) - unsigned_byte(ref(pixel_x, i))), ex)
+      ey = max(abs(unsigned_byte(dst(pixel_y, i)) - unsigned_byte(ref(pixel_y, i))), ey)
+      ez = max(abs(unsigned_byte(dst(pixel_z, i)) - unsigned_byte(ref(pixel_z, i))), ez)
     end do
   end subroutine max_error
 

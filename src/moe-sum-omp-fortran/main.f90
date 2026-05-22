@@ -1,21 +1,16 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_float, c_int, c_int64_t
   use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
   use omp_lib
   implicit none
 
-  real(real32), parameter :: rand_max = 2147483647.0_real32
-
   interface
-    subroutine c_srand(seed) bind(C, name="srand")
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
-
-    function c_rand() bind(C, name="rand") result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine moe_sum_initialize_input(input, input_size, topk) bind(C, name="moe_sum_initialize_input")
+      import :: c_float, c_int, c_int64_t
+      real(c_float), intent(out) :: input(*)
+      integer(c_int64_t), value :: input_size
+      integer(c_int), value :: topk
+    end subroutine moe_sum_initialize_input
   end interface
 
   character(len=256) :: arg0, arg
@@ -49,9 +44,10 @@ program main
   do topk = 2, 4
     input_size = output_size * int(topk, int64)
     allocate(input(input_size))
+    !$omp target enter data map(to: input(1:input_size))
     call initialize_input(input, topk)
     call moe_sum_ref(topk, r_output, input, num_tokens, hidden_size)
-    !$omp target enter data map(to: input(1:input_size))
+    !$omp target update to(input(1:input_size))
 
     call run_moe_sum(topk, input, output, r_output, num_tokens, hidden_size, repeat, scalar_bandwidth)
     call run_moe_sum_vec(topk, input, output, output_vec, num_tokens, hidden_size, repeat, scalar_bandwidth)
@@ -68,12 +64,8 @@ contains
   subroutine initialize_input(input, topk)
     real(real32), intent(out) :: input(:)
     integer, intent(in) :: topk
-    integer(int64) :: i
 
-    call c_srand(int(topk, c_int))
-    do i = 1, size(input, kind=int64)
-      input(i) = real(c_rand(), real32) / rand_max * 2.0_real32 - 1.0_real32
-    end do
+    call moe_sum_initialize_input(input, int(size(input, kind=int64), c_int64_t), int(topk, c_int))
   end subroutine initialize_input
 
   subroutine moe_sum_ref(topk, out, input, num_tokens, hidden_size)
@@ -153,7 +145,7 @@ contains
          elapsed_ns * 1.0e-3_real64 / real(repeat, real64), ' (us)'
 
     !$omp target update from(output_vec(1:int(num_tokens, int64) * int(hidden_size, int64)))
-    ok = all(abs(output - output_vec) <= 1.0e-6_real32)
+    ok = bitwise_equal(output, output_vec)
     write(*,'(A)') merge('PASS', 'FAIL', ok)
     io_bytes = real(repeat, real32) * &
          real(size(input, kind=int64) + size(output_vec, kind=int64), real32) * 4.0_real32
@@ -162,6 +154,17 @@ contains
     pct = 100.0_real32 * (bandwidth_vec - bandwidth) / bandwidth
     write(*,'(A,F0.6,A,F0.6,A)') 'Kernel(vec4) bandwidth: ', bandwidth_vec, ' GB/s (', pct, '%)'
   end subroutine run_moe_sum_vec
+
+  logical function bitwise_equal(lhs, rhs) result(equal)
+    real(real32), intent(in) :: lhs(:), rhs(:)
+    integer(int32), allocatable :: lhs_bits(:), rhs_bits(:)
+
+    allocate(lhs_bits(size(lhs)), rhs_bits(size(rhs)))
+    lhs_bits = transfer(lhs, lhs_bits)
+    rhs_bits = transfer(rhs, rhs_bits)
+    equal = all(lhs_bits == rhs_bits)
+    deallocate(lhs_bits, rhs_bits)
+  end function bitwise_equal
 
   subroutine moe_sum_kernel(topk, out, input, d, num_blocks, block_size)
     integer, intent(in) :: topk, d, num_blocks, block_size

@@ -17,7 +17,6 @@ program main
 
   call get_command_argument(1, image_path)
   repeat = read_arg(2)
-  if (repeat <= 0) error stop 'repeat must be positive'
 
   call load_ppm(trim(image_path), input, width, height)
   n_pixels = width * height
@@ -166,51 +165,141 @@ contains
     integer(int32), intent(in) :: input(:)
     integer(int32), intent(inout) :: tmp(:), output(:)
     integer, intent(in) :: width, height, repeat
-    integer :: cycle, idx, x, y, offset, yy
-    real(real32) :: rs, gs, bs, as, r, g, b, a
+    integer, parameter :: szMaxWorkgroupSize = 256
+    integer :: cycle, globalPosX
+    integer :: iRadiusAligned, uiNumOutputPix, uiBlockWidth, numTeams, blockSize
+    integer :: lid, gidx, gidy, globalPosY, iGlobalOffset, iOffsetX, iLimit
+    integer :: scratchOffset, y, uiInputOffset, uiOutputOffset
+    real(real32), allocatable :: uc4LocalDataR(:), uc4LocalDataG(:), uc4LocalDataB(:), uc4LocalDataA(:)
+    real(real32) :: f4SumR, f4SumG, f4SumB, f4SumA
+    real(real32) :: r, g, b, a
+    real(real32) :: topR, topG, topB, topA, botR, botG, botB, botA
     real(real64) :: start_time, end_time, avg_us
+
+    iRadiusAligned = ((radius + 15) / 16) * 16
+    uiNumOutputPix = 64
+    if (szMaxWorkgroupSize < (iRadiusAligned + uiNumOutputPix + radius)) then
+      uiNumOutputPix = szMaxWorkgroupSize - iRadiusAligned - radius
+    end if
+    uiBlockWidth = (width + uiNumOutputPix - 1) / uiNumOutputPix
+    numTeams = height * uiBlockWidth
+    blockSize = iRadiusAligned + uiNumOutputPix + radius
+    allocate(uc4LocalDataR(numTeams * 90), uc4LocalDataG(numTeams * 90), &
+        uc4LocalDataB(numTeams * 90), uc4LocalDataA(numTeams * 90))
 
     start_time = omp_get_wtime()
     do cycle = 1, repeat
-      !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(idx, offset, rs, gs, bs, as, r, g, b, a)
-      do y = 1, height
-        do x = 1, width
-          rs = 0.0_real32
-          gs = 0.0_real32
-          bs = 0.0_real32
-          as = 0.0_real32
-          do offset = -radius, radius
-            if (x + offset >= 1 .and. x + offset <= width) then
-              call unpack_rgba(input((y - 1) * width + x + offset), r, g, b, a)
-              rs = rs + r
-              gs = gs + g
-              bs = bs + b
-              as = as + a
-            end if
-          end do
-          idx = (y - 1) * width + x
-          tmp(idx) = pack_scaled(rs, gs, bs, as)
-        end do
-      end do
-      !$omp end target teams distribute parallel do
+      !$omp target teams num_teams(numTeams) thread_limit(blockSize) &
+      !$omp& map(alloc: uc4LocalDataR(1:numTeams * 90), uc4LocalDataG(1:numTeams * 90), &
+      !$omp& uc4LocalDataB(1:numTeams * 90), uc4LocalDataA(1:numTeams * 90))
+        !$omp parallel private(lid, gidx, gidy, globalPosX, globalPosY, iGlobalOffset, scratchOffset, &
+        !$omp& iOffsetX, iLimit, f4SumR, f4SumG, f4SumB, f4SumA, r, g, b, a)
+        lid = omp_get_thread_num()
+        gidx = mod(omp_get_team_num(), uiBlockWidth)
+        gidy = omp_get_team_num() / uiBlockWidth
 
-      !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(idx, yy, rs, gs, bs, as, r, g, b, a)
-      do y = 1, height
-        do x = 1, width
-          rs = 0.0_real32
-          gs = 0.0_real32
-          bs = 0.0_real32
-          as = 0.0_real32
-          do offset = -radius, radius
-            yy = min(height, max(1, y + offset))
-            call unpack_rgba(tmp((yy - 1) * width + x), r, g, b, a)
-            rs = rs + r
-            gs = gs + g
-            bs = bs + b
-            as = as + a
+        globalPosX = gidx * uiNumOutputPix + lid - iRadiusAligned
+        globalPosY = gidy
+        iGlobalOffset = globalPosY * width + globalPosX + 1
+        scratchOffset = omp_get_team_num() * 90 + lid + 1
+
+        if (globalPosX >= 0 .and. globalPosX < width) then
+          call unpack_rgba(input(iGlobalOffset), r, g, b, a)
+          uc4LocalDataR(scratchOffset) = r
+          uc4LocalDataG(scratchOffset) = g
+          uc4LocalDataB(scratchOffset) = b
+          uc4LocalDataA(scratchOffset) = a
+        else
+          uc4LocalDataR(scratchOffset) = 0.0_real32
+          uc4LocalDataG(scratchOffset) = 0.0_real32
+          uc4LocalDataB(scratchOffset) = 0.0_real32
+          uc4LocalDataA(scratchOffset) = 0.0_real32
+        end if
+
+        !$omp barrier
+
+        if (globalPosX >= 0 .and. globalPosX < width .and. lid >= iRadiusAligned .and. &
+            lid < iRadiusAligned + uiNumOutputPix) then
+          f4SumR = 0.0_real32
+          f4SumG = 0.0_real32
+          f4SumB = 0.0_real32
+          f4SumA = 0.0_real32
+          iOffsetX = lid - radius
+          iLimit = iOffsetX + (2 * radius) + 1
+          do while (iOffsetX < iLimit)
+            scratchOffset = omp_get_team_num() * 90 + iOffsetX + 1
+            f4SumR = f4SumR + uc4LocalDataR(scratchOffset)
+            f4SumG = f4SumG + uc4LocalDataG(scratchOffset)
+            f4SumB = f4SumB + uc4LocalDataB(scratchOffset)
+            f4SumA = f4SumA + uc4LocalDataA(scratchOffset)
+            iOffsetX = iOffsetX + 1
           end do
-          idx = (y - 1) * width + x
-          output(idx) = pack_scaled(rs, gs, bs, as)
+          tmp(iGlobalOffset) = pack_scaled(f4SumR, f4SumG, f4SumB, f4SumA)
+        end if
+        !$omp end parallel
+      !$omp end target teams
+
+      !$omp target teams distribute parallel do thread_limit(64) private(y, uiInputOffset, uiOutputOffset, &
+      !$omp& f4SumR, f4SumG, f4SumB, f4SumA, topR, topG, topB, topA, botR, botG, botB, botA, r, g, b, a)
+      do globalPosX = 0, width - 1
+        call unpack_rgba(tmp(globalPosX + 1), topR, topG, topB, topA)
+        call unpack_rgba(tmp((height - 1) * width + globalPosX + 1), botR, botG, botB, botA)
+
+        f4SumR = topR * real(radius, real32)
+        f4SumG = topG * real(radius, real32)
+        f4SumB = topB * real(radius, real32)
+        f4SumA = topA * real(radius, real32)
+        do y = 0, radius
+          uiInputOffset = y * width + globalPosX + 1
+          call unpack_rgba(tmp(uiInputOffset), r, g, b, a)
+          f4SumR = f4SumR + r
+          f4SumG = f4SumG + g
+          f4SumB = f4SumB + b
+          f4SumA = f4SumA + a
+        end do
+        output(globalPosX + 1) = pack_scaled(f4SumR, f4SumG, f4SumB, f4SumA)
+
+        do y = 1, radius
+          uiInputOffset = (y + radius) * width + globalPosX + 1
+          call unpack_rgba(tmp(uiInputOffset), r, g, b, a)
+          f4SumR = f4SumR + r - topR
+          f4SumG = f4SumG + g - topG
+          f4SumB = f4SumB + b - topB
+          f4SumA = f4SumA + a - topA
+          uiOutputOffset = y * width + globalPosX + 1
+          output(uiOutputOffset) = pack_scaled(f4SumR, f4SumG, f4SumB, f4SumA)
+        end do
+
+        do y = radius + 1, height - radius - 1
+          uiInputOffset = (y + radius) * width + globalPosX + 1
+          call unpack_rgba(tmp(uiInputOffset), r, g, b, a)
+          f4SumR = f4SumR + r
+          f4SumG = f4SumG + g
+          f4SumB = f4SumB + b
+          f4SumA = f4SumA + a
+          uiInputOffset = ((y - radius) * width) + globalPosX + 1 - width
+          call unpack_rgba(tmp(uiInputOffset), r, g, b, a)
+          f4SumR = f4SumR - r
+          f4SumG = f4SumG - g
+          f4SumB = f4SumB - b
+          f4SumA = f4SumA - a
+          uiOutputOffset = y * width + globalPosX + 1
+          output(uiOutputOffset) = pack_scaled(f4SumR, f4SumG, f4SumB, f4SumA)
+        end do
+
+        do y = height - radius, height - 1
+          f4SumR = f4SumR + botR
+          f4SumG = f4SumG + botG
+          f4SumB = f4SumB + botB
+          f4SumA = f4SumA + botA
+          uiInputOffset = ((y - radius) * width) + globalPosX + 1 - width
+          call unpack_rgba(tmp(uiInputOffset), r, g, b, a)
+          f4SumR = f4SumR - r
+          f4SumG = f4SumG - g
+          f4SumB = f4SumB - b
+          f4SumA = f4SumA - a
+          uiOutputOffset = y * width + globalPosX + 1
+          output(uiOutputOffset) = pack_scaled(f4SumR, f4SumG, f4SumB, f4SumA)
         end do
       end do
       !$omp end target teams distribute parallel do
@@ -218,6 +307,7 @@ contains
     end_time = omp_get_wtime()
     avg_us = ((end_time - start_time) * 1.0e6_real64) / real(repeat, real64)
     write(*, '(A,F0.6,A)') 'Average kernel execution time ', avg_us, ' (us)'
+    deallocate(uc4LocalDataR, uc4LocalDataG, uc4LocalDataB, uc4LocalDataA)
   end subroutine box_filter_device
 
   subroutine box_filter_host(input, tmp, output, width, height)

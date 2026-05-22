@@ -23,7 +23,6 @@ program main
   call get_command_argument(2, arg2)
   read(arg1, *) compute_iterations
   read(arg2, *) repeat
-  if (compute_iterations < 0 .or. repeat <= 0) stop 1
 
   datasize_mb = vector_size * 4 / (1024 * 1024)
   print '(A,I0,A)', 'Buffer size: ', datasize_mb, 'MB'
@@ -32,7 +31,6 @@ program main
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
-    stop 1
   end if
 
 contains

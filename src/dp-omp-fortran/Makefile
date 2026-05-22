@@ -1,4 +1,5 @@
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  ?= yes
 DEBUG     ?= no
 DEVICE    ?= gpu
@@ -7,9 +8,11 @@ LAUNCHER  ?=
 
 program = main
 source  = main.f90
-obj     = $(source:.f90=.o)
+cxxsource = rng_helper.cpp
+obj     = $(source:.f90=.o) $(cxxsource:.cpp=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
+CXXFLAGS := $(EXTRA_CXXFLAGS) -Wall
 
 ifeq ($(DEBUG),yes)
   FFLAGS += -g
@@ -17,6 +20,7 @@ endif
 
 ifeq ($(OPTIMIZE),yes)
   FFLAGS += -O3
+  CXXFLAGS += -O3
 endif
 
 ifeq ($(DEVICE),gpu)
@@ -25,7 +29,7 @@ else
   FFLAGS += -fopenmp
 endif
 
-LDFLAGS =
+LDFLAGS = -lstdc++
 BENCHMARK_ARGS ?= 268435456 1000
 
 $(program): $(obj)
@@ -33,6 +37,9 @@ $(program): $(obj)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj) *.mod

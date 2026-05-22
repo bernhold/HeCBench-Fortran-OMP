@@ -98,9 +98,9 @@ contains
     end do
     call print_status(all(data == r_data))
 
-    call time_shared_real64(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem')
-    call time_shared_real64(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem')
-    call time_shared_real64(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem')
+    call time_shared_real64(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem', 1)
+    call time_shared_real64(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem', 2)
+    call time_shared_real64(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem', 3)
     !$omp end target data
     deallocate(data, h_data, r_data)
   end subroutine atomic_perf_real64
@@ -167,9 +167,9 @@ contains
     end do
     call print_status(all(data == r_data))
 
-    call time_shared_real32(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem')
-    call time_shared_real32(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem')
-    call time_shared_real32(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem')
+    call time_shared_real32(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem', 1)
+    call time_shared_real32(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem', 2)
+    call time_shared_real32(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem', 3)
     !$omp end target data
     deallocate(data, h_data, r_data)
   end subroutine atomic_perf_real32
@@ -236,9 +236,9 @@ contains
     end do
     call print_status(all(data == r_data))
 
-    call time_shared_int32(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem')
-    call time_shared_int32(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem')
-    call time_shared_int32(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem')
+    call time_shared_int32(data, h_data, t, n, repeat, 'BlockRangeAtomicOnSharedMem', 1)
+    call time_shared_int32(data, h_data, t, n, repeat, 'WarpRangeAtomicOnSharedMem', 2)
+    call time_shared_int32(data, h_data, t, n, repeat, 'SingleRangeAtomicOnSharedMem', 3)
     !$omp end target data
     deallocate(data, h_data, r_data)
   end subroutine atomic_perf_int32
@@ -360,18 +360,26 @@ contains
     !$omp end target teams distribute parallel do
   end subroutine single_global_int32
 
-  subroutine time_shared_real64(data, h_data, t, n, repeat, label)
+  subroutine time_shared_real64(data, h_data, t, n, repeat, label, mode)
     real(real64), intent(inout) :: data(:)
     real(real64), intent(in) :: h_data(:)
-    integer, intent(in) :: t, n, repeat
+    integer, intent(in) :: t, n, repeat, mode
     character(len=*), intent(in) :: label
-    integer :: rep
+    integer :: rep, offset
     real(real64) :: start_time, end_time
     data = h_data
     !$omp target update to(data(1:t))
     start_time = omp_get_wtime()
     do rep = 1, repeat
-      call shared_no_write_real64(n)
+      select case (mode)
+      case (1)
+        call block_shared_real64(data, n)
+      case (2)
+        call warp_shared_real64(data, n)
+      case (3)
+        offset = mod(rep - 1, block_size)
+        call single_shared_real64(data, offset, n)
+      end select
     end do
     end_time = omp_get_wtime()
     print '(A,A,A,F0.6,A)', 'Average execution time of ', label, ': ', &
@@ -380,18 +388,26 @@ contains
     call print_status(all(data == h_data))
   end subroutine time_shared_real64
 
-  subroutine time_shared_real32(data, h_data, t, n, repeat, label)
+  subroutine time_shared_real32(data, h_data, t, n, repeat, label, mode)
     real(real32), intent(inout) :: data(:)
     real(real32), intent(in) :: h_data(:)
-    integer, intent(in) :: t, n, repeat
+    integer, intent(in) :: t, n, repeat, mode
     character(len=*), intent(in) :: label
-    integer :: rep
+    integer :: rep, offset
     real(real64) :: start_time, end_time
     data = h_data
     !$omp target update to(data(1:t))
     start_time = omp_get_wtime()
     do rep = 1, repeat
-      call shared_no_write_real32(n)
+      select case (mode)
+      case (1)
+        call block_shared_real32(data, n)
+      case (2)
+        call warp_shared_real32(data, n)
+      case (3)
+        offset = mod(rep - 1, block_size)
+        call single_shared_real32(data, offset, n)
+      end select
     end do
     end_time = omp_get_wtime()
     print '(A,A,A,F0.6,A)', 'Average execution time of ', label, ': ', &
@@ -400,18 +416,26 @@ contains
     call print_status(all(data == h_data))
   end subroutine time_shared_real32
 
-  subroutine time_shared_int32(data, h_data, t, n, repeat, label)
+  subroutine time_shared_int32(data, h_data, t, n, repeat, label, mode)
     integer(int32), intent(inout) :: data(:)
     integer(int32), intent(in) :: h_data(:)
-    integer, intent(in) :: t, n, repeat
+    integer, intent(in) :: t, n, repeat, mode
     character(len=*), intent(in) :: label
-    integer :: rep
+    integer :: rep, offset
     real(real64) :: start_time, end_time
     data = h_data
     !$omp target update to(data(1:t))
     start_time = omp_get_wtime()
     do rep = 1, repeat
-      call shared_no_write_int32(n)
+      select case (mode)
+      case (1)
+        call block_shared_int32(data, n)
+      case (2)
+        call warp_shared_int32(data, n)
+      case (3)
+        offset = mod(rep - 1, block_size)
+        call single_shared_int32(data, offset, n)
+      end select
     end do
     end_time = omp_get_wtime()
     print '(A,A,A,F0.6,A)', 'Average execution time of ', label, ': ', &
@@ -420,41 +444,128 @@ contains
     call print_status(all(data == h_data))
   end subroutine time_shared_int32
 
-  subroutine shared_no_write_real64(n)
+  subroutine block_shared_real64(data, n)
+    real(real64), intent(inout) :: data(:)
     integer, intent(in) :: n
-    integer :: i
-    real(real64) :: sink
-    sink = 0.0_real64
-    !$omp target teams distribute parallel do thread_limit(block_size) private(sink)
+    integer :: i, idx
+    real(real64) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
     do i = 0, n - 1
-      sink = sink + real(iand(i, 31), real64)
+      idx = mod(i, block_size) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1.0_real64
     end do
     !$omp end target teams distribute parallel do
-  end subroutine shared_no_write_real64
+  end subroutine block_shared_real64
 
-  subroutine shared_no_write_real32(n)
+  subroutine warp_shared_real64(data, n)
+    real(real64), intent(inout) :: data(:)
     integer, intent(in) :: n
-    integer :: i
-    real(real32) :: sink
-    sink = 0.0_real32
-    !$omp target teams distribute parallel do thread_limit(block_size) private(sink)
+    integer :: i, idx
+    real(real64) :: smem_data(32)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
     do i = 0, n - 1
-      sink = sink + real(iand(i, 31), real32)
+      idx = iand(i, 31) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1.0_real64
     end do
     !$omp end target teams distribute parallel do
-  end subroutine shared_no_write_real32
+  end subroutine warp_shared_real64
 
-  subroutine shared_no_write_int32(n)
-    integer, intent(in) :: n
+  subroutine single_shared_real64(data, offset, n)
+    real(real64), intent(inout) :: data(:)
+    integer, intent(in) :: offset, n
     integer :: i
-    integer(int32) :: sink
-    sink = 0_int32
-    !$omp target teams distribute parallel do thread_limit(block_size) private(sink)
+    real(real64) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size)
     do i = 0, n - 1
-      sink = sink + int(iand(i, 31), int32)
+      !$omp atomic update
+      smem_data(offset + 1) = smem_data(offset + 1) + 1.0_real64
     end do
     !$omp end target teams distribute parallel do
-  end subroutine shared_no_write_int32
+  end subroutine single_shared_real64
+
+  subroutine block_shared_real32(data, n)
+    real(real32), intent(inout) :: data(:)
+    integer, intent(in) :: n
+    integer :: i, idx
+    real(real32) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
+    do i = 0, n - 1
+      idx = mod(i, block_size) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1.0_real32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine block_shared_real32
+
+  subroutine warp_shared_real32(data, n)
+    real(real32), intent(inout) :: data(:)
+    integer, intent(in) :: n
+    integer :: i, idx
+    real(real32) :: smem_data(32)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
+    do i = 0, n - 1
+      idx = iand(i, 31) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1.0_real32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine warp_shared_real32
+
+  subroutine single_shared_real32(data, offset, n)
+    real(real32), intent(inout) :: data(:)
+    integer, intent(in) :: offset, n
+    integer :: i
+    real(real32) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size)
+    do i = 0, n - 1
+      !$omp atomic update
+      smem_data(offset + 1) = smem_data(offset + 1) + 1.0_real32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine single_shared_real32
+
+  subroutine block_shared_int32(data, n)
+    integer(int32), intent(inout) :: data(:)
+    integer, intent(in) :: n
+    integer :: i, idx
+    integer(int32) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
+    do i = 0, n - 1
+      idx = mod(i, block_size) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1_int32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine block_shared_int32
+
+  subroutine warp_shared_int32(data, n)
+    integer(int32), intent(inout) :: data(:)
+    integer, intent(in) :: n
+    integer :: i, idx
+    integer(int32) :: smem_data(32)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size) private(idx)
+    do i = 0, n - 1
+      idx = iand(i, 31) + 1
+      !$omp atomic update
+      smem_data(idx) = smem_data(idx) + 1_int32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine warp_shared_int32
+
+  subroutine single_shared_int32(data, offset, n)
+    integer(int32), intent(inout) :: data(:)
+    integer, intent(in) :: offset, n
+    integer :: i
+    integer(int32) :: smem_data(block_size)
+    !$omp target teams distribute parallel do num_teams(n / block_size) thread_limit(block_size)
+    do i = 0, n - 1
+      !$omp atomic update
+      smem_data(offset + 1) = smem_data(offset + 1) + 1_int32
+    end do
+    !$omp end target teams distribute parallel do
+  end subroutine single_shared_int32
 
   subroutine block_global_ref_real64(data, n)
     real(real64), intent(inout) :: data(:)

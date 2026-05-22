@@ -31,7 +31,7 @@ program main
   total_time = 0.0_real64
   total_count = 0_int64
 
-  !$omp target data map(alloc: test(1:len), scratch(1:len))
+  !$omp target data map(alloc: test(1:len))
   do iter = 1, iteration
     count = reverse_count(iter)
     total_count = total_count + int(count, int64)
@@ -39,7 +39,7 @@ program main
     !$omp target update to(test(1:len))
 
     start_time = omp_get_wtime()
-    call reverse_repeated(test, scratch, count)
+    call reverse_repeated(test, count)
     end_time = omp_get_wtime()
     total_time = total_time + end_time - start_time
 
@@ -53,7 +53,7 @@ program main
   end do
   !$omp end target data
 
-  print '(A,F0.6,A)', 'Total kernel execution time: ', total_time, ' (s)'
+  print '(A,F8.6,A)', 'Total kernel execution time: ', total_time, ' (s)'
   if (error) then
     print '(A)', 'FAIL'
     stop 1
@@ -68,23 +68,24 @@ contains
     count = 100_int32 + modulo(37_int32 * (iter - 1_int32), 9900_int32)
   end function reverse_count
 
-  subroutine reverse_repeated(test, scratch, count)
-    integer(int32), intent(inout) :: test(:), scratch(:)
+  subroutine reverse_repeated(test, count)
+    integer(int32), intent(inout) :: test(:)
     integer(int32), intent(in) :: count
-    integer(int32) :: pass, i
+    integer(int32) :: pass, t
 
     do pass = 1, count
-      !$omp target teams distribute parallel do num_teams(1) thread_limit(len)
-      do i = 1, len
-        scratch(i) = test(i)
-      end do
-      !$omp end target teams distribute parallel do
+      !$omp target teams num_teams(1) thread_limit(len)
+      block
+        integer(int32) :: s(len)
 
-      !$omp target teams distribute parallel do num_teams(1) thread_limit(len)
-      do i = 1, len
-        test(i) = scratch(len - i + 1_int32)
-      end do
-      !$omp end target teams distribute parallel do
+        !$omp parallel private(t) shared(s, test)
+        t = omp_get_thread_num() + 1_int32
+        s(t) = test(t)
+        !$omp barrier
+        test(t) = s(len - t + 1_int32)
+        !$omp end parallel
+      end block
+      !$omp end target teams
     end do
   end subroutine reverse_repeated
 

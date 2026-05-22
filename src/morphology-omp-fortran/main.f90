@@ -54,8 +54,8 @@ program main
   end do
   !$omp end target data
 
-  print '(A,F0.6,A)', 'Average kernel execution time (dilate): ', dilate_time / real(repeat, real64), ' (s)'
-  print '(A,F0.6,A)', 'Average kernel execution time (erode): ', erode_time / real(repeat, real64), ' (s)'
+  print '(A,F8.6,A)', 'Average kernel execution time (dilate): ', dilate_time / real(repeat, real64), ' (s)'
+  print '(A,F8.6,A)', 'Average kernel execution time (erode): ', erode_time / real(repeat, real64), ' (s)'
 
   total = sum(src_img)
   if (total == white) then
@@ -101,35 +101,104 @@ contains
     !$omp end target teams distribute parallel do
   end subroutine clear_image
 
+  pure integer(int32) function round_up(x, y) result(value)
+    integer(int32), intent(in) :: x, y
+
+    value = (x + y - 1_int32) / y
+  end function round_up
+
+  pure integer(int32) function element_op(a, b, is_dilate) result(value)
+    integer(int32), intent(in) :: a, b
+    logical, intent(in) :: is_dilate
+
+    if (is_dilate) then
+      value = max(a, b)
+    else
+      value = min(a, b)
+    end if
+  end function element_op
+
+  pure integer(int32) function border_value(is_dilate) result(value)
+    logical, intent(in) :: is_dilate
+
+    value = merge(white, black, is_dilate)
+  end function border_value
+
+  subroutine two_way_scan(sMem, selSize, tid, is_dilate)
+    integer(int32), intent(inout) :: sMem(128)
+    integer(int32), intent(in) :: selSize, tid
+    logical, intent(in) :: is_dilate
+    integer(int32) :: offset
+
+    sMem(tid + 2_int32 * selSize + 1_int32) = sMem(tid + 1_int32)
+    sMem(tid + 3_int32 * selSize + 1_int32) = sMem(tid + selSize + 1_int32)
+    !$omp barrier
+
+    offset = 1_int32
+    do while (offset < selSize)
+      if (tid >= offset) then
+        sMem(tid + 3_int32 * selSize) = element_op(sMem(tid + 3_int32 * selSize), &
+          sMem(tid + 3_int32 * selSize - offset), is_dilate)
+      end if
+      if (tid <= selSize - 1_int32 - offset) then
+        sMem(tid + 2_int32 * selSize + 1_int32) = element_op( &
+          sMem(tid + 2_int32 * selSize + 1_int32), &
+          sMem(tid + 2_int32 * selSize + 1_int32 + offset), is_dilate)
+      end if
+      !$omp barrier
+      offset = offset * 2_int32
+    end do
+  end subroutine two_way_scan
+
   subroutine horizontal_pass(src, dst, width, height, hsize, is_dilate)
     integer(int32), intent(in) :: src(:)
     integer(int32), intent(inout) :: dst(:)
     integer(int32), intent(in) :: width, height, hsize
     logical, intent(in) :: is_dilate
-    integer(int32) :: row, col, k, half, value, sample
+    integer(int32) :: blockSize_x_h, blockSize_y_h, gridSize_x_h, gridSize_y_h
 
-    half = hsize / 2_int32
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(k, value, sample)
-    do row = 1, height
-      do col = 1, width
-        if (col <= half .or. col > width - half) cycle
-        if (is_dilate) then
-          value = black
-          do k = -half, half
-            sample = src(index_1d(row, col + k, width))
-            if (sample > value) value = sample
-          end do
-        else
-          value = white
-          do k = -half, half
-            sample = src(index_1d(row, col + k, width))
-            if (sample < value) value = sample
-          end do
+    blockSize_x_h = hsize
+    blockSize_y_h = 1_int32
+    gridSize_x_h = round_up(width, blockSize_x_h)
+    gridSize_y_h = round_up(height, blockSize_y_h)
+
+    !$omp target teams num_teams(gridSize_x_h * gridSize_y_h) thread_limit(blockSize_x_h * blockSize_y_h)
+    block
+      integer(int32) :: sMem(128)
+
+      !$omp parallel
+      block
+        integer(int32) :: bx, by, tx, tidx, tidy
+
+        bx = mod(omp_get_team_num(), gridSize_x_h)
+        by = omp_get_team_num() / gridSize_x_h
+        tx = omp_get_thread_num()
+
+        tidx = tx + bx * blockSize_x_h
+        tidy = by * blockSize_y_h
+
+        if (tidx < width .and. tidy < height) then
+          sMem(tx + 1_int32) = src(tidy * width + tidx + 1_int32)
+          if (tidx + hsize < width) then
+            sMem(tx + hsize + 1_int32) = src(tidy * width + tidx + hsize + 1_int32)
+          end if
         end if
-        dst(index_1d(row, col, width)) = value
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+        !$omp barrier
+
+        if (tidx < width .and. tidy < height) then
+          call two_way_scan(sMem, hsize, tx, is_dilate)
+        end if
+
+        if (tidx < width .and. tidy < height) then
+          if (tidx + hsize / 2_int32 < width - hsize / 2_int32) then
+            dst(tidy * width + tidx + hsize / 2_int32 + 1_int32) = element_op( &
+              sMem(tx + 2_int32 * hsize + 1_int32), sMem(tx + 3_int32 * hsize), is_dilate)
+          end if
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine horizontal_pass
 
   subroutine vertical_pass(src, dst, width, height, vsize, is_dilate)
@@ -137,34 +206,53 @@ contains
     integer(int32), intent(inout) :: dst(:)
     integer(int32), intent(in) :: width, height, vsize
     logical, intent(in) :: is_dilate
-    integer(int32) :: row, col, k, half, value, sample, border_value
+    integer(int32) :: blockSize_x_v, blockSize_y_v, gridSize_x_v, gridSize_y_v
 
-    half = vsize / 2_int32
-    border_value = merge(white, black, is_dilate)
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(k, value, sample)
-    do row = 1, height
-      do col = 1, width
-        if (row <= half .or. row > height - half) then
-          dst(index_1d(row, col, width)) = border_value
-        else
-          if (is_dilate) then
-            value = black
-            do k = -half, half
-              sample = src(index_1d(row + k, col, width))
-              if (sample > value) value = sample
-            end do
-          else
-            value = white
-            do k = -half, half
-              sample = src(index_1d(row + k, col, width))
-              if (sample < value) value = sample
-            end do
+    blockSize_x_v = 1_int32
+    blockSize_y_v = vsize
+    gridSize_x_v = round_up(width, blockSize_x_v)
+    gridSize_y_v = round_up(height, blockSize_y_v)
+
+    !$omp target teams num_teams(gridSize_x_v * gridSize_y_v) thread_limit(blockSize_x_v * blockSize_y_v)
+    block
+      integer(int32) :: sMem(128)
+
+      !$omp parallel
+      block
+        integer(int32) :: bx, by, ty, tidx, tidy
+
+        bx = mod(omp_get_team_num(), gridSize_x_v)
+        by = omp_get_team_num() / gridSize_x_v
+        ty = omp_get_thread_num()
+
+        tidx = bx * blockSize_x_v
+        tidy = ty + by * blockSize_y_v
+
+        if (tidx < width .and. tidy < height) then
+          sMem(ty + 1_int32) = src(tidy * width + tidx + 1_int32)
+          if (tidy + vsize < height) then
+            sMem(ty + vsize + 1_int32) = src((tidy + vsize) * width + tidx + 1_int32)
           end if
-          dst(index_1d(row, col, width)) = value
         end if
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+        !$omp barrier
+
+        if (tidx < width .and. tidy < height) then
+          call two_way_scan(sMem, vsize, ty, is_dilate)
+        end if
+
+        if (tidx < width .and. tidy < height) then
+          if (tidy + vsize / 2_int32 < height - vsize / 2_int32) then
+            dst((tidy + vsize / 2_int32) * width + tidx + 1_int32) = element_op( &
+              sMem(ty + 2_int32 * vsize + 1_int32), sMem(ty + 3_int32 * vsize), is_dilate)
+          end if
+          if (tidy < vsize / 2_int32 .or. tidy >= height - vsize / 2_int32) then
+            dst(tidy * width + tidx + 1_int32) = border_value(is_dilate)
+          end if
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine vertical_pass
 
 end program main

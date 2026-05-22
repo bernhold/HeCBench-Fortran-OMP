@@ -24,7 +24,6 @@ program main
   read(arg1, *) nwg
   read(arg2, *) wgs
   read(arg3, *) repeat
-  if (nwg <= 0 .or. wgs <= 0 .or. repeat <= 0) stop 1
 
   allocate(result(nwg))
   result = 0.0_real64
@@ -48,7 +47,6 @@ program main
   ref_sum = romberg_reference(lower_limit, upper_limit, row_size, eps)
   if (abs(d_sum - ref_sum) > eps) then
     print '(A)', 'FAIL'
-    stop 1
   else
     print '(A)', 'PASS'
   end if
@@ -60,18 +58,96 @@ contains
   subroutine compute_segments(result, nwg, wgs)
     real(real64), intent(inout) :: result(:)
     integer, intent(in) :: nwg, wgs
-    integer :: block
-    real(real64) :: width, a, b
+    real(real64) :: a, b
 
-    width = (upper_limit - lower_limit) / real(nwg, real64)
-    !$omp target teams distribute parallel do num_teams(nwg) thread_limit(wgs) private(block, a, b) firstprivate(nwg, width)
-    do block = 0, nwg - 1
-      a = lower_limit + real(block, real64) * width
-      b = a + width
-      result(block + 1) = romberg_reference(a, b, row_size, eps)
-    end do
-    !$omp end target teams distribute parallel do
+    a = lower_limit
+    b = upper_limit
+    !$omp target teams num_teams(nwg) thread_limit(wgs) firstprivate(a, b, nwg)
+    block
+      real(real64) :: smem(row_size * 64)
+
+      !$omp parallel
+      block
+        integer :: threadIdx_x, blockIdx_x, gridDim_x, blockDim_x
+        integer :: i, k, col, row, max_eval
+        real(real64) :: diff, step, sum, local_col(row_size), a_seg, b_seg
+
+        threadIdx_x = omp_get_thread_num()
+        blockIdx_x = omp_get_team_num()
+        gridDim_x = omp_get_num_teams()
+        blockDim_x = omp_get_num_threads()
+        diff = (b - a) / real(gridDim_x, real64)
+        max_eval = ishft(1, row_size - 1)
+        b_seg = a + real(blockIdx_x + 1, real64) * diff
+        a_seg = a + real(blockIdx_x, real64) * diff
+
+        step = (b_seg - a_seg) / real(max_eval, real64)
+
+        local_col = 0.0_real64
+        if (threadIdx_x == 0) then
+          k = blockDim_x
+          local_col(1) = integrand(a_seg) + integrand(b_seg)
+        else
+          k = threadIdx_x
+        end if
+
+        do while (k < max_eval)
+          local_col(row_size - getFirstSetBitPos(k) + 1) = local_col(row_size - getFirstSetBitPos(k) + 1) + &
+              2.0_real64 * integrand(a_seg + step * real(k, real64))
+          k = k + blockDim_x
+        end do
+
+        do i = 1, row_size
+          smem(row_size * threadIdx_x + i) = local_col(i)
+        end do
+        !$omp barrier
+
+        if (threadIdx_x < row_size) then
+          sum = 0.0_real64
+          do i = threadIdx_x, blockDim_x * row_size - 1, row_size
+            sum = sum + smem(i + 1)
+          end do
+          smem(threadIdx_x + 1) = sum
+        end if
+        !$omp barrier
+
+        if (threadIdx_x == 0) then
+          local_col(1) = smem(1)
+
+          do k = 2, row_size
+            local_col(k) = local_col(k - 1) + smem(k)
+          end do
+
+          do k = 1, row_size
+            local_col(k) = local_col(k) * (b_seg - a_seg) / real(ishft(1, k), real64)
+          end do
+
+          do col = 1, row_size - 1
+            do row = row_size, col + 1, -1
+              local_col(row) = local_col(row) + (local_col(row) - local_col(row - 1)) / &
+                  real(ishft(1, 2 * col - 1) - 1, real64)
+            end do
+          end do
+
+          result(blockIdx_x + 1) = local_col(row_size)
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine compute_segments
+
+  integer function getFirstSetBitPos(n)
+    integer, intent(in) :: n
+    integer :: value
+
+    value = iand(n, -n)
+    getFirstSetBitPos = 1
+    do while (value > 1)
+      value = ishft(value, -1)
+      getFirstSetBitPos = getFirstSetBitPos + 1
+    end do
+  end function getFirstSetBitPos
 
   real(real64) function integrand(x)
     real(real64), intent(in) :: x

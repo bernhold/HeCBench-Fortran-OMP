@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : real32, real64
+  use, intrinsic :: iso_fortran_env, only : int8, real32, real64
   use omp_lib
   implicit none
 
@@ -16,7 +16,7 @@ program main
   integer :: x, y, idx, i, fail, max_error, err
   real(real32) :: truerange, range, fx, fy
   real(real64) :: start_time, elapsed
-  integer, allocatable :: pix(:), d_pix(:)
+  integer(int8), allocatable :: pix(:), res(:), d_pix(:)
 
   call get_command_argument(0, arg0)
   if (command_argument_count() /= 3) then
@@ -34,8 +34,9 @@ program main
   if (half_size <= 0) stop 1
 
   img_size = size * size * 3
-  allocate(pix(img_size), d_pix(img_size))
+  allocate(pix(img_size), res(img_size), d_pix(img_size))
   pix = 0
+  res = 0
   d_pix = 0
 
   do y = 0, size - 1
@@ -75,7 +76,7 @@ program main
   fail = 0
   max_error = 0
   do i = 1, img_size
-    err = abs(d_pix(i) - pix(i))
+    err = abs(ubyte_value(res(i)) - ubyte_value(pix(i)))
     if (err > 1) then
       fail = 1
       if (err > max_error) max_error = err
@@ -88,13 +89,13 @@ program main
     write(*,'(A)') 'PASS'
   end if
 
-  deallocate(pix, d_pix)
+  deallocate(pix, res, d_pix)
 
 contains
 
   subroutine compute_color(fx, fy, pix)
     real(real32), intent(in) :: fx, fy
-    integer, intent(out) :: pix(3)
+    integer(int8), intent(out) :: pix(3)
     integer :: cw(0:maxcols - 1, 0:2)
     integer :: k, j, b, k0, k1
     real(real32) :: rad, a, fk, f, col0, col1, col
@@ -142,9 +143,24 @@ contains
       else
         col = col * 0.75_real32
       end if
-      pix(3 - b) = int(255.0_real32 * col)
+      pix(3 - b) = to_ubyte(int(255.0_real32 * col))
     end do
   end subroutine compute_color
+
+  pure integer(int8) function to_ubyte(value) result(byte)
+    integer, intent(in) :: value
+    if (value <= 127) then
+      byte = int(value, int8)
+    else
+      byte = int(value - 256, int8)
+    end if
+  end function to_ubyte
+
+  pure integer function ubyte_value(byte) result(value)
+    integer(int8), intent(in) :: byte
+    value = int(byte)
+    if (value < 0) value = value + 256
+  end function ubyte_value
 
   subroutine set_col(cw, r, g, b, k)
     integer, intent(inout) :: cw(0:maxcols - 1, 0:2)

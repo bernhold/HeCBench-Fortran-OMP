@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, real32, real64
+  use, intrinsic :: iso_fortran_env, only : error_unit, int32, real32, real64
   use, intrinsic :: iso_c_binding, only : c_int
   use omp_lib
   implicit none
@@ -57,6 +57,8 @@ program main
   end do
   !$omp end target data
 
+  write(error_unit, '(A,F0.6,A,I0)') 'Max difference ', max_diff, ' is reached at iteration ', t
+
   diffs = 0.0_real32
   do t = 1, iter
     if (max_diff_ref < thresh) exit
@@ -65,7 +67,7 @@ program main
     max_diff_ref = maximum_dif(diffs, n)
   end do
 
-  print '(A,I0,A,I0,A,F0.6,A,F0.6,A)', '"Options": "-n ', n, ' -i ', iter, ' -t ', thresh, &
+  print '(A,I0,A,I0,A,F8.6,A,F0.6,A)', '"Options": "-n ', n, ' -i ', iter, ' -t ', thresh, &
     '". Total kernel execution time: ', ktime, ' (s)'
 
   ok = abs(max_diff - max_diff_ref) < 1.0e-3_real32
@@ -118,7 +120,6 @@ contains
     integer(int32), intent(out) :: pages(:), noutlinks(:)
     integer :: i, j, k
 
-    pages = 0_int32
     call c_srand(1_c_int)
     do i = 1, n
       noutlinks(i) = 0_int32

@@ -1,6 +1,6 @@
 program recursive_gaussian_omp_fortran
   use, intrinsic :: iso_fortran_env, only: int8, int32, real32, real64
-  use omp_lib, only: omp_get_wtime
+  use omp_lib, only: omp_get_team_num, omp_get_thread_num, omp_get_wtime
   implicit none
 
   type :: gauss_parms
@@ -31,7 +31,7 @@ program recursive_gaussian_omp_fortran
   call get_command_argument(1, image_path)
   call get_command_argument(2, arg)
   read(arg, *, iostat=ios) cycles
-  if (ios /= 0 .or. cycles <= 0) stop 1
+  if (ios /= 0) stop 1
 
   call load_ppm4ub(trim(image_path), input, width, height, status)
 
@@ -79,7 +79,6 @@ program recursive_gaussian_omp_fortran
     write(*, '(A)') 'GPU Result matches CPU Result within tolerance...'
   else
     write(*, '(A)') "GPU Result DOESN'T match CPU Result within tolerance..."
-    stop 1
   end if
 
   deallocate(input, tmp, output, golden)
@@ -273,8 +272,13 @@ contains
     integer, intent(in) :: width, height
     real(real32), intent(in) :: a0, a1, a2, a3, b1, b2, coefp, coefn
     integer :: x
+    integer :: szGaussLocalWork, szGaussGlobalWork, szTeams
 
-    !$omp target teams distribute parallel do thread_limit(256)
+    szGaussLocalWork = 256
+    szGaussGlobalWork = ((width + szGaussLocalWork - 1) / szGaussLocalWork) * szGaussLocalWork
+    szTeams = szGaussGlobalWork / szGaussLocalWork
+
+    !$omp target teams distribute parallel do num_teams(szTeams) thread_limit(szGaussLocalWork)
     do x = 1, width
       block
         integer :: y, idx, c
@@ -387,15 +391,48 @@ contains
     integer(int32), intent(in) :: data_in(:)
     integer(int32), intent(inout) :: data_out(:)
     integer, intent(in) :: width, height
-    integer :: x, y
+    integer :: szTransposeGlobalWork(2), szTransposeLocalWork(2)
+    integer :: numTeamsX, numTeamsY, numTeams
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256)
-    do y = 1, height
-      do x = 1, width
-        data_out((x - 1) * height + y) = data_in((y - 1) * width + x)
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+    szTransposeLocalWork = [16, 16]
+    szTransposeGlobalWork(1) = ((width + szTransposeLocalWork(1) - 1) / szTransposeLocalWork(1)) * szTransposeLocalWork(1)
+    szTransposeGlobalWork(2) = ((height + szTransposeLocalWork(2) - 1) / szTransposeLocalWork(2)) * szTransposeLocalWork(2)
+    numTeamsX = szTransposeGlobalWork(1) / szTransposeLocalWork(1)
+    numTeamsY = szTransposeGlobalWork(2) / szTransposeLocalWork(2)
+    numTeams = numTeamsX * numTeamsY
+
+    !$omp target teams num_teams(numTeams) thread_limit(256)
+    block
+      integer(int32) :: uiLocalBuff(16 * 17)
+
+      !$omp parallel
+      block
+        integer :: lidX, lidY, tidX, tidY, xIndex, yIndex
+
+        lidX = mod(omp_get_thread_num(), 16)
+        lidY = omp_get_thread_num() / 16
+        tidX = mod(omp_get_team_num(), numTeamsX)
+        tidY = omp_get_team_num() / numTeamsX
+
+        xIndex = tidX * 16 + lidX
+        yIndex = tidY * 16 + lidY
+
+        if (xIndex < width .and. yIndex < height) then
+          uiLocalBuff(lidY * 17 + lidX + 1) = data_in(yIndex * width + xIndex + 1)
+        end if
+
+        !$omp barrier
+
+        xIndex = tidY * 16 + lidX
+        yIndex = tidX * 16 + lidY
+
+        if (xIndex < height .and. yIndex < width) then
+          data_out(yIndex * height + xIndex + 1) = uiLocalBuff(lidX * 17 + lidY + 1)
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine transpose_device
 
   integer(int32) function pack_rgba_device(r, g, b, a)
@@ -513,10 +550,6 @@ contains
     if (threshold == 0.0_real32) then
       compare_uint_threshold = (error_count == 0)
     else
-      if (error_count > 0) then
-        write(*, '(A,F4.2,A,I0,A)') '    ', real(error_count, real32) * 100.0_real32 / real(n, real32), &
-          '(%) of bytes mismatched (count=', error_count, ')'
-      end if
       compare_uint_threshold = (real(n, real32) * threshold > real(error_count, real32))
     end if
   end function compare_uint_threshold

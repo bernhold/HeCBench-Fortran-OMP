@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_int, c_signed_char
   use, intrinsic :: iso_fortran_env, only : int64, real64
   use omp_lib
   implicit none
@@ -7,6 +7,11 @@ program main
   integer, parameter :: tile_rows = 5
   integer, parameter :: tile_cols = 32
   integer, parameter :: kernel_size = 5
+  integer, parameter :: half_ksize = kernel_size / 2
+  integer, parameter :: apron_rows = tile_rows + kernel_size - 1
+  integer, parameter :: apron_cols = tile_cols + kernel_size - 1
+  integer, parameter :: n_tile_pixels = tile_rows * tile_cols
+  integer, parameter :: n_apron_fill_tasks = apron_rows * apron_cols
   integer, parameter :: rggb = 0
 
   interface
@@ -23,8 +28,9 @@ program main
 
   character(len=256) :: arg0, arg
   integer :: width, height, repeat, num_pix, input_image_pitch, output_image_pitch
-  integer, allocatable :: input(:), output(:), reference(:)
-  integer :: i
+  integer :: teamX, teamY
+  integer(c_signed_char), allocatable :: input(:), output(:), reference(:)
+  integer :: i, rand_value
   integer(int64) :: checksum
   real(real64) :: start_time, elapsed
 
@@ -46,15 +52,20 @@ program main
 
   call c_srand(123_c_int)
   do i = 1, num_pix
-    input(i) = modulo(c_rand(), 256_c_int)
+    rand_value = modulo(c_rand(), 256_c_int)
+    input(i) = byte_from_uchar(rand_value)
   end do
-  output = 0
-  reference = 0
+  teamX = (width + tile_cols - 1) / tile_cols
+  teamY = (height + tile_rows - 1) / tile_rows
+  output = byte_from_uchar(0)
+  reference = byte_from_uchar(0)
 
   !$omp target data map(to: input(1:num_pix)) map(from: output(1:4*num_pix))
   start_time = omp_get_wtime()
   do i = 1, repeat
-    call malvar_he_cutler_demosaic(height, width, input, input_image_pitch, output, &
+    output = byte_from_uchar(0)
+    !$omp target update to(output(1:4*num_pix))
+    call malvar_he_cutler_demosaic(teamX, teamY, height, width, input, input_image_pitch, output, &
       output_image_pitch, rggb)
   end do
   elapsed = omp_get_wtime() - start_time
@@ -67,7 +78,7 @@ program main
 
   checksum = 0_int64
   do i = 1, num_pix
-    checksum = checksum + int(output(i), int64)
+    checksum = checksum + int(unsigned_byte(output(i)), int64)
   end do
   write(*,'(A,I0)') 'Checksum: ', checksum
 
@@ -75,44 +86,85 @@ program main
 
 contains
 
-  subroutine malvar_he_cutler_demosaic(height, width, input_image, input_pitch, output_image, &
+  subroutine malvar_he_cutler_demosaic(teamX, teamY, height, width, input_image, input_pitch, output_image, &
       output_pitch, bayer_pattern)
-    integer, intent(in) :: height, width, input_pitch, output_pitch, bayer_pattern
-    integer, intent(in) :: input_image(:)
-    integer, intent(inout) :: output_image(:)
-    integer :: row, col
+    integer, intent(in) :: teamX, teamY, height, width, input_pitch, output_pitch, bayer_pattern
+    integer(c_signed_char), intent(in) :: input_image(:)
+    integer(c_signed_char), intent(inout) :: output_image(:)
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(tile_rows * tile_cols) &
-    !$omp& map(to: input_image(1:height*width)) map(tofrom: output_image(1:4*height*width))
-    do row = 0, height - 1
-      do col = 0, width - 1
-        call demosaic_pixel(row, col, height, width, input_image, input_pitch, output_image, &
-          output_pitch, bayer_pattern)
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp target teams num_teams(teamX * teamY) thread_limit(tile_cols * tile_rows)
+    block
+      integer :: apron(apron_rows * apron_cols)
+
+      !$omp parallel
+      block
+        integer :: tile_col_blocksize, tile_row_blocksize
+        integer :: tile_col_block, tile_row_block, tile_col, tile_row
+        integer :: g_c, g_r, tile_flat_id, apron_fill_task_id
+        integer :: apron_read_row, apron_read_col, ag_c, ag_r, a_c, a_r
+        logical :: valid_pixel_task
+
+        tile_col_blocksize = tile_cols
+        tile_row_blocksize = tile_rows
+        tile_col_block = mod(omp_get_team_num(), teamX)
+        tile_row_block = omp_get_team_num() / teamX
+        tile_col = mod(omp_get_thread_num(), tile_cols)
+        tile_row = omp_get_thread_num() / tile_cols
+        g_c = tile_col_blocksize * tile_col_block + tile_col
+        g_r = tile_row_blocksize * tile_row_block + tile_row
+        valid_pixel_task = (g_r < height) .and. (g_c < width)
+
+        tile_flat_id = tile_row * tile_cols + tile_col
+        do apron_fill_task_id = tile_flat_id, n_apron_fill_tasks - 1, n_tile_pixels
+          apron_read_row = apron_fill_task_id / apron_cols
+          apron_read_col = mod(apron_fill_task_id, apron_cols)
+          ag_c = apron_read_col + tile_col_block * tile_col_blocksize - half_ksize
+          ag_r = apron_read_row + tile_row_block * tile_row_blocksize - half_ksize
+          apron(apron_read_row * apron_cols + apron_read_col + 1) = &
+            sample_pixel(input_image, height, width, input_pitch, ag_r, ag_c)
+        end do
+
+        !$omp barrier
+
+        a_c = tile_col + half_ksize
+        a_r = tile_row + half_ksize
+        if (valid_pixel_task) then
+          call demosaic_pixel(g_r, g_c, a_r, a_c, apron, output_image, output_pitch, bayer_pattern)
+        end if
+      end block
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine malvar_he_cutler_demosaic
 
   subroutine reference_demosaic(height, width, input_image, input_pitch, output_image, &
       output_pitch, bayer_pattern)
     integer, intent(in) :: height, width, input_pitch, output_pitch, bayer_pattern
-    integer, intent(in) :: input_image(:)
-    integer, intent(inout) :: output_image(:)
-    integer :: row, col
+    integer(c_signed_char), intent(in) :: input_image(:)
+    integer(c_signed_char), intent(inout) :: output_image(:)
+    integer :: row, col, apron_row, apron_col
+    integer :: apron(apron_rows * apron_cols)
 
     do row = 0, height - 1
       do col = 0, width - 1
-        call demosaic_pixel(row, col, height, width, input_image, input_pitch, output_image, &
+        apron = 0
+        do apron_row = 0, kernel_size - 1
+          do apron_col = 0, kernel_size - 1
+            apron(apron_row * apron_cols + apron_col + 1) = &
+              sample_pixel(input_image, height, width, input_pitch, &
+                row + apron_row - half_ksize, col + apron_col - half_ksize)
+          end do
+        end do
+        call demosaic_pixel(row, col, half_ksize, half_ksize, apron, output_image, &
           output_pitch, bayer_pattern)
       end do
     end do
   end subroutine reference_demosaic
 
-  subroutine demosaic_pixel(g_r, g_c, height, width, input_image, input_pitch, output_image, &
-      output_pitch, bayer_pattern)
-    integer, intent(in) :: g_r, g_c, height, width, input_pitch, output_pitch, bayer_pattern
-    integer, intent(in) :: input_image(:)
-    integer, intent(inout) :: output_image(:)
+  subroutine demosaic_pixel(g_r, g_c, a_r, a_c, apron, output_image, output_pitch, bayer_pattern)
+    integer, intent(in) :: g_r, g_c, a_r, a_c, output_pitch, bayer_pattern
+    integer, intent(in) :: apron(:)
+    integer(c_signed_char), intent(inout) :: output_image(:)
     integer :: f_ij, r1, r2, r3, r4
     integer :: green_at_red_or_blue, red_at_green_in_red, red_at_green_in_blue
     integer :: blue_at_green_in_red, blue_at_green_in_blue, red_at_blue, blue_at_red
@@ -120,51 +172,31 @@ contains
     logical :: in_red_row, in_blue_row, is_red_pixel, is_blue_pixel, is_green_pixel
     integer :: red_value, green_value, blue_value, out_idx
 
-    f_ij = sample_pixel(input_image, height, width, input_pitch, g_r, g_c)
+    f_ij = apron_pixel(apron, a_r, a_c)
 
-    r1 = (4 * f(g_r, g_c, input_image, height, width, input_pitch) + &
-      2 * (f(g_r, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r - 1, g_c, input_image, height, width, input_pitch) + &
-           f(g_r, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c, input_image, height, width, input_pitch)) - &
-      f(g_r, g_c - 2, input_image, height, width, input_pitch) - &
-      f(g_r, g_c + 2, input_image, height, width, input_pitch) - &
-      f(g_r - 2, g_c, input_image, height, width, input_pitch) - &
-      f(g_r + 2, g_c, input_image, height, width, input_pitch)) / 8
+    r1 = (4 * ap(apron, a_r, a_c) + &
+      2 * (ap(apron, a_r, a_c - 1) + ap(apron, a_r - 1, a_c) + &
+           ap(apron, a_r, a_c + 1) + ap(apron, a_r + 1, a_c)) - &
+      ap(apron, a_r, a_c - 2) - ap(apron, a_r, a_c + 2) - &
+      ap(apron, a_r - 2, a_c) - ap(apron, a_r + 2, a_c)) / 8
 
-    r2 = (8 * (f(g_r, g_c - 1, input_image, height, width, input_pitch) + &
-               f(g_r, g_c + 1, input_image, height, width, input_pitch)) + &
-      10 * f(g_r, g_c, input_image, height, width, input_pitch) + &
-      f(g_r - 2, g_c, input_image, height, width, input_pitch) + &
-      f(g_r + 2, g_c, input_image, height, width, input_pitch) - &
-      2 * (f(g_r - 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r - 1, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r, g_c - 2, input_image, height, width, input_pitch) + &
-           f(g_r, g_c + 2, input_image, height, width, input_pitch))) / 16
+    r2 = (8 * (ap(apron, a_r, a_c - 1) + ap(apron, a_r, a_c + 1)) + &
+      10 * ap(apron, a_r, a_c) + ap(apron, a_r - 2, a_c) + ap(apron, a_r + 2, a_c) - &
+      2 * (ap(apron, a_r - 1, a_c - 1) + ap(apron, a_r - 1, a_c + 1) + &
+           ap(apron, a_r + 1, a_c - 1) + ap(apron, a_r + 1, a_c + 1) + &
+           ap(apron, a_r, a_c - 2) + ap(apron, a_r, a_c + 2))) / 16
 
-    r3 = (8 * (f(g_r - 1, g_c, input_image, height, width, input_pitch) + &
-               f(g_r + 1, g_c, input_image, height, width, input_pitch)) + &
-      10 * f(g_r, g_c, input_image, height, width, input_pitch) + &
-      f(g_r, g_c - 2, input_image, height, width, input_pitch) + &
-      f(g_r, g_c + 2, input_image, height, width, input_pitch) - &
-      2 * (f(g_r - 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r - 1, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r - 2, g_c, input_image, height, width, input_pitch) + &
-           f(g_r + 2, g_c, input_image, height, width, input_pitch))) / 16
+    r3 = (8 * (ap(apron, a_r - 1, a_c) + ap(apron, a_r + 1, a_c)) + &
+      10 * ap(apron, a_r, a_c) + ap(apron, a_r, a_c - 2) + ap(apron, a_r, a_c + 2) - &
+      2 * (ap(apron, a_r - 1, a_c - 1) + ap(apron, a_r - 1, a_c + 1) + &
+           ap(apron, a_r + 1, a_c - 1) + ap(apron, a_r + 1, a_c + 1) + &
+           ap(apron, a_r - 2, a_c) + ap(apron, a_r + 2, a_c))) / 16
 
-    r4 = (12 * f(g_r, g_c, input_image, height, width, input_pitch) - &
-      3 * (f(g_r, g_c - 2, input_image, height, width, input_pitch) + &
-           f(g_r, g_c + 2, input_image, height, width, input_pitch) + &
-           f(g_r - 2, g_c, input_image, height, width, input_pitch) + &
-           f(g_r + 2, g_c, input_image, height, width, input_pitch)) + &
-      4 * (f(g_r - 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r - 1, g_c + 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c - 1, input_image, height, width, input_pitch) + &
-           f(g_r + 1, g_c + 1, input_image, height, width, input_pitch))) / 16
+    r4 = (12 * ap(apron, a_r, a_c) - &
+      3 * (ap(apron, a_r, a_c - 2) + ap(apron, a_r, a_c + 2) + &
+           ap(apron, a_r - 2, a_c) + ap(apron, a_r + 2, a_c)) + &
+      4 * (ap(apron, a_r - 1, a_c - 1) + ap(apron, a_r - 1, a_c + 1) + &
+           ap(apron, a_r + 1, a_c - 1) + ap(apron, a_r + 1, a_c + 1))) / 16
 
     green_at_red_or_blue = r1
     red_at_green_in_red = r2
@@ -196,25 +228,30 @@ contains
     green_value = bool_int(is_green_pixel) * f_ij + bool_int(.not. is_green_pixel) * green_at_red_or_blue
 
     out_idx = g_r * output_pitch + g_c * 4 + 1
-    output_image(out_idx) = saturate_uchar(red_value)
-    output_image(out_idx + 1) = saturate_uchar(green_value)
-    output_image(out_idx + 2) = saturate_uchar(blue_value)
-    output_image(out_idx + 3) = 0
+    output_image(out_idx) = byte_from_uchar(saturate_uchar(red_value))
+    output_image(out_idx + 1) = byte_from_uchar(saturate_uchar(green_value))
+    output_image(out_idx + 2) = byte_from_uchar(saturate_uchar(blue_value))
+    output_image(out_idx + 3) = byte_from_uchar(0)
   end subroutine demosaic_pixel
 
-  integer function f(row, col, input_image, height, width, pitch) result(value)
-    integer, intent(in) :: row, col, height, width, pitch
-    integer, intent(in) :: input_image(:)
-    value = sample_pixel(input_image, height, width, pitch, row, col)
-  end function f
+  integer function ap(apron, row, col) result(value)
+    integer, intent(in) :: apron(:), row, col
+    value = apron_pixel(apron, row, col)
+  end function ap
+
+  integer function apron_pixel(apron, row, col) result(value)
+    integer, intent(in) :: apron(:), row, col
+    value = apron(row * apron_cols + col + 1)
+  end function apron_pixel
 
   integer function sample_pixel(input_image, height, width, pitch, row, col) result(value)
-    integer, intent(in) :: input_image(:), height, width, pitch, row, col
+    integer(c_signed_char), intent(in) :: input_image(:)
+    integer, intent(in) :: height, width, pitch, row, col
     integer :: rr, cc
 
     rr = reflect_exclusive(row, height)
     cc = reflect_exclusive(col, width)
-    value = input_image(rr * pitch + cc + 1)
+    value = unsigned_byte(input_image(rr * pitch + cc + 1))
   end function sample_pixel
 
   integer function reflect_exclusive(coord, limit) result(value)
@@ -245,5 +282,21 @@ contains
     logical, intent(in) :: value
     out = merge(1, 0, value)
   end function bool_int
+
+  integer(c_signed_char) function byte_from_uchar(value) result(out)
+    integer, intent(in) :: value
+    integer :: wrapped
+
+    wrapped = modulo(value, 256)
+    if (wrapped >= 128) wrapped = wrapped - 256
+    out = int(wrapped, c_signed_char)
+  end function byte_from_uchar
+
+  integer function unsigned_byte(value) result(out)
+    integer(c_signed_char), intent(in) :: value
+
+    out = int(value)
+    if (out < 0) out = out + 256
+  end function unsigned_byte
 
 end program main

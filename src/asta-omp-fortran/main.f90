@@ -27,8 +27,9 @@ program main
   end type params_t
 
   type(params_t) :: p
-  integer :: tiled_n, padded_n, in_size, status
-  real(real32), allocatable :: input_backup(:), device_output(:), host_output(:)
+  integer :: tiled_n, padded_n, in_size, finished_size, status
+  real(real32), allocatable :: h_in_out(:), h_in_backup(:), host_output(:)
+  integer, allocatable :: h_finished(:), h_head(:)
   real(real64) :: elapsed
 
   call parse_args(p)
@@ -39,24 +40,27 @@ program main
   tiled_n = divceil(p%n, p%s)
   padded_n = tiled_n * p%s
   in_size = p%m * padded_n
+  finished_size = p%m * tiled_n
 
-  allocate(input_backup(in_size), device_output(in_size), host_output(in_size))
-  call read_input(input_backup)
-  device_output = 0.0_real32
+  allocate(h_in_out(in_size), h_in_backup(in_size), h_finished(finished_size), h_head(1), host_output(in_size))
+  call read_input(h_in_out)
+  h_in_backup = h_in_out
+  h_finished = 0
+  h_head = 0
   host_output = 0.0_real32
 
-  call asta_device(input_backup, device_output, p, tiled_n, padded_n, in_size, elapsed)
-  write(*, '(A,F0.6,A)') 'Average kernel execution time ', elapsed / real(p%n_reps, real64), ' (s)'
+  call asta_device(h_in_out, h_in_backup, h_finished, h_head, p, tiled_n, in_size, finished_size, elapsed)
+  call print_timing(elapsed / real(p%n_reps, real64))
 
-  call cpu_soa_asta(input_backup, host_output, padded_n, p%m, p%s)
-  status = compare_output(device_output, host_output)
+  call cpu_soa_asta(h_in_backup, host_output, padded_n, p%m, p%s)
+  status = compare_output(h_in_out, host_output)
   if (status == 0) then
     print '(A)', 'PASS'
   else
     print '(A)', 'FAIL'
   end if
 
-  deallocate(input_backup, device_output, host_output)
+  deallocate(h_in_out, h_in_backup, h_finished, h_head, host_output)
 
 contains
 
@@ -133,6 +137,16 @@ contains
     write(*, '(A)') ''
   end subroutine usage
 
+  subroutine print_timing(value)
+    real(real64), intent(in) :: value
+
+    if (value >= 0.0_real64 .and. value < 1.0_real64) then
+      write(*, '(A,A,F0.6,A)') 'Average kernel execution time ', '0', value, ' (s)'
+    else
+      write(*, '(A,F0.6,A)') 'Average kernel execution time ', value, ' (s)'
+    end if
+  end subroutine print_timing
+
   subroutine read_input(x)
     real(real32), intent(out) :: x(:)
     integer :: i
@@ -145,35 +159,135 @@ contains
     end do
   end subroutine read_input
 
-  subroutine asta_device(input, output, p, tiled_n, padded_n, in_size, elapsed)
-    real(real32), intent(in) :: input(:)
-    real(real32), intent(inout) :: output(:)
+  subroutine asta_device(h_in_out, h_in_backup, h_finished, h_head, p, tiled_n, in_size, finished_size, elapsed)
+    real(real32), intent(inout) :: h_in_out(:)
+    real(real32), intent(in) :: h_in_backup(:)
+    integer, intent(inout) :: h_finished(:), h_head(:)
     type(params_t), intent(in) :: p
-    integer, intent(in) :: tiled_n, padded_n, in_size
+    integer, intent(in) :: tiled_n, in_size, finished_size
     real(real64), intent(out) :: elapsed
-    integer :: rep, tile, row, elem, src_idx, dst_idx
+    integer :: rep
+    integer :: lmem(2)
+    integer :: tid, m, next_in_cycle, i, nthreads
+    real(real32) :: data1, data2, data3, data4
+    real(real32) :: backup1, backup2, backup3, backup4
     real(real64) :: start_time, end_time
 
-    start_time = 0.0_real64
-    !$omp target data map(to: input(1:in_size)) map(from: output(1:in_size))
+    elapsed = 0.0_real64
+    !$omp target data map(alloc: h_in_out(1:in_size), h_finished(1:finished_size), h_head(1:1))
     do rep = 1, p%n_warmup + p%n_reps
-      if (rep == p%n_warmup + 1) start_time = omp_get_wtime()
-      !$omp target teams distribute parallel do collapse(3) num_teams(p%n_gpu_blocks) thread_limit(p%n_gpu_threads) &
-      !$omp& private(src_idx, dst_idx)
-      do tile = 1, tiled_n
-        do row = 1, p%m
-          do elem = 1, p%s
-            src_idx = (row - 1) * padded_n + (tile - 1) * p%s + elem
-            dst_idx = (tile - 1) * p%m * p%s + (row - 1) * p%s + elem
-            output(dst_idx) = input(src_idx)
+      h_in_out = h_in_backup
+      h_finished = 0
+      h_head(1) = 0
+
+      !$omp target update to(h_in_out(1:in_size))
+      !$omp target update to(h_finished(1:finished_size))
+      !$omp target update to(h_head(1:1))
+
+      start_time = omp_get_wtime()
+
+      !$omp target teams num_teams(p%n_gpu_blocks) thread_limit(p%n_gpu_threads) private(lmem)
+        !$omp parallel private(tid, m, next_in_cycle, i, nthreads, data1, data2, data3, data4, backup1, backup2, backup3, backup4)
+        tid = omp_get_thread_num()
+        nthreads = omp_get_num_threads()
+        m = p%m * tiled_n - 1
+
+        if (tid == 0) then
+          !$omp atomic capture
+          lmem(2) = h_head(1)
+          h_head(1) = h_head(1) + 1
+          !$omp end atomic
+        end if
+        !$omp barrier
+
+        do while (lmem(2) < m)
+          next_in_cycle = (lmem(2) * p%m) - m * (lmem(2) / tiled_n)
+          if (next_in_cycle == lmem(2)) then
+            !$omp barrier
+            if (tid == 0) then
+              !$omp atomic capture
+              lmem(2) = h_head(1)
+              h_head(1) = h_head(1) + 1
+              !$omp end atomic
+            end if
+            !$omp barrier
+            cycle
+          end if
+
+          i = tid
+          if (i < p%s) data1 = h_in_out(lmem(2) * p%s + i + 1)
+          i = i + nthreads
+          if (i < p%s) data2 = h_in_out(lmem(2) * p%s + i + 1)
+          i = i + nthreads
+          if (i < p%s) data3 = h_in_out(lmem(2) * p%s + i + 1)
+          i = i + nthreads
+          if (i < p%s) data4 = real(nthreads, real32)
+
+          if (tid == 0) then
+            !$omp atomic read
+            lmem(1) = h_finished(lmem(2) + 1)
+          end if
+          !$omp barrier
+
+          do while (lmem(1) == 0)
+            i = tid
+            if (i < p%s) backup1 = h_in_out(next_in_cycle * p%s + i + 1)
+            i = i + nthreads
+            if (i < p%s) backup2 = h_in_out(next_in_cycle * p%s + i + 1)
+            i = i + nthreads
+            if (i < p%s) backup3 = h_in_out(next_in_cycle * p%s + i + 1)
+            i = i + nthreads
+            if (i < p%s) backup4 = h_in_out(next_in_cycle * p%s + i + 1)
+
+            if (tid == 0) then
+              !$omp atomic capture
+              lmem(1) = h_finished(next_in_cycle + 1)
+              h_finished(next_in_cycle + 1) = 1
+              !$omp end atomic
+            end if
+            !$omp barrier
+
+            if (lmem(1) == 0) then
+              i = tid
+              if (i < p%s) h_in_out(next_in_cycle * p%s + i + 1) = data1
+              i = i + nthreads
+              if (i < p%s) h_in_out(next_in_cycle * p%s + i + 1) = data2
+              i = i + nthreads
+              if (i < p%s) h_in_out(next_in_cycle * p%s + i + 1) = data3
+              i = i + nthreads
+              if (i < p%s) h_in_out(next_in_cycle * p%s + i + 1) = data4
+            end if
+
+            i = tid
+            if (i < p%s) data1 = backup1
+            i = i + nthreads
+            if (i < p%s) data2 = backup2
+            i = i + nthreads
+            if (i < p%s) data3 = backup3
+            i = i + nthreads
+            if (i < p%s) data4 = backup4
+
+            next_in_cycle = (next_in_cycle * p%m) - m * (next_in_cycle / tiled_n)
           end do
+
+          !$omp barrier
+          if (tid == 0) then
+            !$omp atomic capture
+            lmem(2) = h_head(1)
+            h_head(1) = h_head(1) + 1
+            !$omp end atomic
+          end if
+          !$omp barrier
         end do
-      end do
-      !$omp end target teams distribute parallel do
+        !$omp end parallel
+      !$omp end target teams
+
+      end_time = omp_get_wtime()
+      if (rep > p%n_warmup) elapsed = elapsed + (end_time - start_time)
+
+      !$omp target update from(h_in_out(1:in_size))
     end do
-    end_time = omp_get_wtime()
     !$omp end target data
-    elapsed = end_time - start_time
   end subroutine asta_device
 
   subroutine cpu_soa_asta(src, dst, height, width, tile_size)

@@ -115,14 +115,16 @@ contains
     real(real32), intent(in) :: inp(:)
     integer, intent(in) :: bsz, tsz, csz, nh, block_size
     integer :: idx, b, rest, nh_idx, n, d_idx, input_idx, head_size
-    integer(int64) :: total, plane
+    integer(int64) :: total_threads, num_blocks, plane
 
     head_size = csz / nh
-    total = int(bsz, int64) * int(tsz, int64) * int(csz, int64)
-    plane = total
+    total_threads = int(bsz, int64) * int(tsz, int64) * int(csz, int64)
+    num_blocks = (total_threads + int(block_size, int64) - 1_int64) / int(block_size, int64)
+    plane = total_threads
 
-    !$omp target teams distribute parallel do private(b, rest, nh_idx, n, d_idx, input_idx) thread_limit(block_size)
-    do idx = 0, int(total) - 1
+    !$omp target teams distribute parallel do private(b, rest, nh_idx, n, d_idx, input_idx) &
+    !$omp& num_teams(num_blocks) thread_limit(block_size) num_threads(block_size)
+    do idx = 0, int(total_threads) - 1
       b = idx / (csz * tsz)
       rest = modulo(idx, csz * tsz)
       nh_idx = rest / (tsz * head_size)

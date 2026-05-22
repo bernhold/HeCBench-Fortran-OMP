@@ -1,5 +1,5 @@
 module michalewicz_mod
-  use iso_c_binding, only: c_int
+  use iso_c_binding, only: c_int, c_ptr, c_size_t, c_loc
   use iso_fortran_env, only: int32, int64, real32, real64
   use omp_lib
   implicit none
@@ -8,28 +8,24 @@ module michalewicz_mod
   real(real32), parameter :: pi32 = acos(-1.0_real32)
 
   interface
-    subroutine c_srand(seed) bind(C, name='srand')
+    subroutine mt19937_reset(seed) bind(C, name='michalewicz_mt19937_reset')
       import :: c_int
       integer(c_int), value :: seed
-    end subroutine c_srand
+    end subroutine mt19937_reset
 
-    function c_rand() bind(C, name='rand') result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine mt19937_fill(values, count) bind(C, name='michalewicz_mt19937_fill')
+      import :: c_ptr, c_size_t
+      type(c_ptr), value :: values
+      integer(c_size_t), value :: count
+    end subroutine mt19937_fill
   end interface
 
 contains
 
   subroutine fill_values(values)
-    real(real32), intent(out) :: values(0:)
-    integer(int64) :: i
-    integer(c_int) :: sample
+    real(real32), target, intent(out) :: values(0:)
 
-    do i = 0, int(size(values), int64) - 1
-      sample = c_rand()
-      values(i) = 4.0_real32 * real(sample, real32) / real(huge(1_c_int), real32)
-    end do
+    call mt19937_fill(c_loc(values(0)), int(size(values), c_size_t))
   end subroutine fill_values
 
   pure real(real32) function michalewicz_cpu(values, offset, dim) result(value)
@@ -154,7 +150,7 @@ program main
   use michalewicz_mod
   implicit none
 
-  integer :: argc, repeat, status, d
+  integer :: argc, repeat, d
   integer(int64) :: n
   integer, parameter :: dims(3) = [2, 5, 10]
   character(len=256) :: arg, prog
@@ -167,14 +163,56 @@ program main
   end if
 
   call get_command_argument(1, arg)
-  read(arg, *, iostat=status) n
-  if (status /= 0) stop 1
+  n = parse_atol(arg)
   call get_command_argument(2, arg)
-  read(arg, *, iostat=status) repeat
-  if (status /= 0) stop 1
+  repeat = parse_atoi(arg)
 
-  call c_srand(19937_c_int)
+  call mt19937_reset(19937_c_int)
   do d = 1, size(dims)
     call run_dimension(n, repeat, dims(d))
   end do
+contains
+
+  integer(int64) function parse_atol(text) result(value)
+    character(len=*), intent(in) :: text
+    integer :: i, sign, digit
+
+    value = 0_int64
+    i = 1
+    do while (i <= len_trim(text) .and. is_space(text(i:i)))
+      i = i + 1
+    end do
+
+    sign = 1
+    if (i <= len_trim(text)) then
+      if (text(i:i) == '-') then
+        sign = -1
+        i = i + 1
+      else if (text(i:i) == '+') then
+        i = i + 1
+      end if
+    end if
+
+    do while (i <= len_trim(text))
+      digit = iachar(text(i:i)) - iachar('0')
+      if (digit < 0 .or. digit > 9) exit
+      value = value * 10_int64 + int(digit, int64)
+      i = i + 1
+    end do
+    value = value * int(sign, int64)
+  end function parse_atol
+
+  integer function parse_atoi(text) result(value)
+    character(len=*), intent(in) :: text
+
+    value = int(parse_atol(text))
+  end function parse_atoi
+
+  logical function is_space(ch) result(space)
+    character(len=1), intent(in) :: ch
+    integer :: code
+
+    code = iachar(ch)
+    space = ch == ' ' .or. (code >= 9 .and. code <= 13)
+  end function is_space
 end program main

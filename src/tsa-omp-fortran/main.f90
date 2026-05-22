@@ -29,13 +29,14 @@ contains
   subroutine tsa32(width, height, repeat)
     integer, intent(in) :: width, height, repeat
     integer :: numel, i
-    real(real32), allocatable :: p_real(:), p_imag(:), h_real(:), h_imag(:)
+    real(real32), allocatable :: p_real(:), p_imag(:), p2_real(:), p2_imag(:), h_real(:), h_imag(:)
     real(real32) :: a, b
     real(real64) :: start_time, elapsed_us
     logical :: ok
 
     numel = width * height
-    allocate(p_real(0:numel-1), p_imag(0:numel-1), h_real(0:numel-1), h_imag(0:numel-1))
+    allocate(p_real(0:numel-1), p_imag(0:numel-1), p2_real(0:numel-1), p2_imag(0:numel-1), &
+             h_real(0:numel-1), h_imag(0:numel-1))
     call init_p32(p_real, p_imag, width, height)
     h_real = p_real
     h_imag = p_imag
@@ -44,15 +45,28 @@ contains
 
     call reference32(h_real, h_imag, a, b, width, height, repeat)
 
-    !$omp target data map(tofrom: p_real, p_imag)
+    !$omp target data map(to: p_real, p_imag) map(alloc: p2_real, p2_imag)
     start_time = omp_get_wtime()
     do i = 1, repeat
-      call trotter_sequence32(p_real, p_imag, a, b, width, height)
+      if (mod(i, 2) == 1) then
+        call trotter_kernel32(p_real, p_imag, p2_real, p2_imag, a, b, width, height)
+      else
+        call trotter_kernel32(p2_real, p2_imag, p_real, p_imag, a, b, width, height)
+      end if
     end do
     elapsed_us = (omp_get_wtime() - start_time) * 1.0e6_real64 / real(repeat, real64)
+    if (mod(repeat, 2) == 1) then
+      !$omp target update from(p2_real, p2_imag)
+    else
+      !$omp target update from(p_real, p_imag)
+    end if
     !$omp end target data
 
     write(*,'("Average kernel execution time: ",F0.6," (us)")') elapsed_us
+    if (mod(repeat, 2) == 1) then
+      p_real = p2_real
+      p_imag = p2_imag
+    end if
     ok = maxval(abs(p_real - h_real)) <= 1.0e-3_real32 .and. maxval(abs(p_imag - h_imag)) <= 1.0e-3_real32
     write(*,'(A)') merge("PASS", "FAIL", ok)
     if (.not. ok) stop 1
@@ -61,13 +75,14 @@ contains
   subroutine tsa64(width, height, repeat)
     integer, intent(in) :: width, height, repeat
     integer :: numel, i
-    real(real64), allocatable :: p_real(:), p_imag(:), h_real(:), h_imag(:)
+    real(real64), allocatable :: p_real(:), p_imag(:), p2_real(:), p2_imag(:), h_real(:), h_imag(:)
     real(real64) :: a, b
     real(real64) :: start_time, elapsed_us
     logical :: ok
 
     numel = width * height
-    allocate(p_real(0:numel-1), p_imag(0:numel-1), h_real(0:numel-1), h_imag(0:numel-1))
+    allocate(p_real(0:numel-1), p_imag(0:numel-1), p2_real(0:numel-1), p2_imag(0:numel-1), &
+             h_real(0:numel-1), h_imag(0:numel-1))
     call init_p64(p_real, p_imag, width, height)
     h_real = p_real
     h_imag = p_imag
@@ -76,15 +91,28 @@ contains
 
     call reference64(h_real, h_imag, a, b, width, height, repeat)
 
-    !$omp target data map(tofrom: p_real, p_imag)
+    !$omp target data map(to: p_real, p_imag) map(alloc: p2_real, p2_imag)
     start_time = omp_get_wtime()
     do i = 1, repeat
-      call trotter_sequence64(p_real, p_imag, a, b, width, height)
+      if (mod(i, 2) == 1) then
+        call trotter_kernel64(p_real, p_imag, p2_real, p2_imag, a, b, width, height)
+      else
+        call trotter_kernel64(p2_real, p2_imag, p_real, p_imag, a, b, width, height)
+      end if
     end do
     elapsed_us = (omp_get_wtime() - start_time) * 1.0e6_real64 / real(repeat, real64)
+    if (mod(repeat, 2) == 1) then
+      !$omp target update from(p2_real, p2_imag)
+    else
+      !$omp target update from(p_real, p_imag)
+    end if
     !$omp end target data
 
     write(*,'("Average kernel execution time: ",F0.6," (us)")') elapsed_us
+    if (mod(repeat, 2) == 1) then
+      p_real = p2_real
+      p_imag = p2_imag
+    end if
     ok = maxval(abs(p_real - h_real)) <= 1.0e-3_real64 .and. maxval(abs(p_imag - h_imag)) <= 1.0e-3_real64
     write(*,'(A)') merge("PASS", "FAIL", ok)
     if (.not. ok) stop 1

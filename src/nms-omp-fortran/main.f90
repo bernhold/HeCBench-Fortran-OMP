@@ -6,9 +6,16 @@ program main
   integer, parameter :: max_detections = 4096
   integer, parameter :: n_partitions = 32
 
+  type :: float4
+    real(real32) :: x
+    real(real32) :: y
+    real(real32) :: z
+    real(real32) :: w
+  end type float4
+
   character(len=512) :: input_file, output_file
   integer :: repeat, ndetections, limit, threads, totaldets
-  real(real32), allocatable :: px(:), py(:), pz(:), ps(:)
+  type(float4), allocatable :: points(:)
   integer(int8), allocatable :: pointsbitmap(:), nmsbitmap(:)
   real(real64) :: start_time, end_time
 
@@ -21,25 +28,25 @@ program main
   call get_command_argument(2, output_file)
   repeat = read_arg(3)
 
-  allocate(px(max_detections), py(max_detections), pz(max_detections), ps(max_detections))
+  allocate(points(max_detections))
   allocate(pointsbitmap(max_detections), nmsbitmap(max_detections * max_detections))
-  px = 0.0_real32
-  py = 0.0_real32
-  pz = 0.0_real32
-  ps = 0.0_real32
+  points%x = 0.0_real32
+  points%y = 0.0_real32
+  points%z = 0.0_real32
+  points%w = 0.0_real32
   pointsbitmap = 0_int8
   nmsbitmap = 1_int8
 
-  call read_points(trim(input_file), px, py, pz, ps, ndetections)
+  call read_points(trim(input_file), points, ndetections)
   print '(A,A,A,I0)', 'Number of detections read from input file (', trim(input_file), '): ', ndetections
 
   limit = get_upper_limit(ndetections, 16)
   threads = get_optimal_dim(limit) * get_optimal_dim(limit)
 
-  !$omp target data map(to: px(1:max_detections), py(1:max_detections), pz(1:max_detections), ps(1:max_detections), &
+  !$omp target data map(to: points(1:max_detections), &
   !$omp& nmsbitmap(1:max_detections * max_detections)) map(tofrom: pointsbitmap(1:max_detections))
   start_time = omp_get_wtime()
-  call generate_nms_bitmap(px, py, pz, ps, nmsbitmap, limit, repeat, threads)
+  call generate_nms_bitmap(points, nmsbitmap, limit, repeat, threads)
   end_time = omp_get_wtime()
   print '(A,F0.6,A)', 'Average kernel execution time (generate_nms_bitmap): ', &
     (end_time - start_time) / real(repeat, real64), ' (s)'
@@ -51,10 +58,10 @@ program main
     (end_time - start_time) / real(repeat, real64), ' (s)'
   !$omp end target data
 
-  call write_points(trim(output_file), px, py, pz, ps, pointsbitmap, ndetections, totaldets)
+  call write_points(trim(output_file), points, pointsbitmap, ndetections, totaldets)
   print '(A,I0)', 'Detections after NMS: ', totaldets
 
-  deallocate(px, py, pz, ps, pointsbitmap, nmsbitmap)
+  deallocate(points, pointsbitmap, nmsbitmap)
 
 contains
 
@@ -111,9 +118,9 @@ contains
     get_upper_limit = cnt
   end function get_upper_limit
 
-  subroutine read_points(path, px, py, pz, ps, ndetections)
+  subroutine read_points(path, points, ndetections)
     character(len=*), intent(in) :: path
-    real(real32), intent(inout) :: px(:), py(:), pz(:), ps(:)
+    type(float4), intent(inout) :: points(:)
     integer, intent(out) :: ndetections
     character(len=256) :: line
     integer :: unit, ios, k, x, y, w
@@ -139,16 +146,16 @@ contains
       end if
       ndetections = ndetections + 1
       if (ndetections > max_detections) exit
-      px(ndetections) = real(x, real32)
-      py(ndetections) = real(y, real32)
-      pz(ndetections) = real(w, real32)
-      ps(ndetections) = score
+      points(ndetections)%x = real(x, real32)
+      points(ndetections)%y = real(y, real32)
+      points(ndetections)%z = real(w, real32)
+      points(ndetections)%w = score
     end do
     close(unit)
   end subroutine read_points
 
-  subroutine generate_nms_bitmap(px, py, pz, ps, nmsbitmap, limit, repeat, threads)
-    real(real32), intent(in) :: px(:), py(:), pz(:), ps(:)
+  subroutine generate_nms_bitmap(points, nmsbitmap, limit, repeat, threads)
+    type(float4), intent(in) :: points(:)
     integer(int8), intent(inout) :: nmsbitmap(:)
     integer, intent(in) :: limit, repeat, threads
     integer :: rep, i, j, idx
@@ -158,12 +165,14 @@ contains
       !$omp target teams distribute parallel do collapse(2) thread_limit(threads) private(idx, area, overlap_w, overlap_h)
       do i = 1, limit
         do j = 1, limit
-          if (ps(i) < ps(j)) then
-            area = (pz(j) + 1.0_real32) * (pz(j) + 1.0_real32)
-            overlap_w = max(0.0_real32, min(px(i) + pz(i), px(j) + pz(j)) - max(px(i), px(j)) + 1.0_real32)
-            overlap_h = max(0.0_real32, min(py(i) + pz(i), py(j) + pz(j)) - max(py(i), py(j)) + 1.0_real32)
+          if (points(i)%w < points(j)%w) then
+            area = (points(j)%z + 1.0_real32) * (points(j)%z + 1.0_real32)
+            overlap_w = max(0.0_real32, min(points(i)%x + points(i)%z, points(j)%x + points(j)%z) - &
+              max(points(i)%x, points(j)%x) + 1.0_real32)
+            overlap_h = max(0.0_real32, min(points(i)%y + points(i)%z, points(j)%y + points(j)%z) - &
+              max(points(i)%y, points(j)%y) + 1.0_real32)
             idx = (i - 1) * max_detections + j
-            if (((overlap_w * overlap_h) / area) < 0.3_real32 .and. pz(j) /= 0.0_real32) then
+            if (((overlap_w * overlap_h) / area) < 0.3_real32 .and. points(j)%z /= 0.0_real32) then
               nmsbitmap(idx) = 1_int8
             else
               nmsbitmap(idx) = 0_int8
@@ -179,24 +188,37 @@ contains
     integer(int8), intent(in) :: nmsbitmap(:)
     integer(int8), intent(inout) :: pointsbitmap(:)
     integer, intent(in) :: ndetections, repeat
-    integer :: rep, bid, j, accum
+    integer :: rep, bid, lid, idx, part, s
 
     do rep = 1, repeat
-      !$omp target teams distribute parallel do thread_limit(max_detections / n_partitions) private(j, accum)
-      do bid = 1, ndetections
-        accum = 1
-        do j = 1, max_detections
-          accum = iand(accum, int(nmsbitmap((bid - 1) * max_detections + j)))
-        end do
-        pointsbitmap(bid) = int(accum, int8)
+      !$omp target teams num_teams(ndetections) thread_limit(max_detections / n_partitions) private(bid, lid, idx, part, s)
+      !$omp parallel private(bid, lid, idx, part)
+      bid = omp_get_team_num()
+      lid = omp_get_thread_num()
+      idx = bid * max_detections + lid + 1
+
+      if (lid == 0) s = 1
+      !$omp barrier
+
+      !$omp atomic update
+      s = iand(s, int(nmsbitmap(idx)))
+      !$omp barrier
+
+      do part = 1, n_partitions - 1
+        idx = idx + max_detections / n_partitions
+        !$omp atomic update
+        s = iand(s, int(nmsbitmap(idx)))
+        !$omp barrier
       end do
-      !$omp end target teams distribute parallel do
+      pointsbitmap(bid + 1) = int(s, int8)
+      !$omp end parallel
+      !$omp end target teams
     end do
   end subroutine reduce_nms_bitmap
 
-  subroutine write_points(path, px, py, pz, ps, pointsbitmap, ndetections, totaldets)
+  subroutine write_points(path, points, pointsbitmap, ndetections, totaldets)
     character(len=*), intent(in) :: path
-    real(real32), intent(in) :: px(:), py(:), pz(:), ps(:)
+    type(float4), intent(in) :: points(:)
     integer(int8), intent(in) :: pointsbitmap(:)
     integer, intent(in) :: ndetections
     integer, intent(out) :: totaldets
@@ -210,7 +232,7 @@ contains
     totaldets = 0
     do i = 1, ndetections
       if (pointsbitmap(i) /= 0_int8) then
-        write(unit,'(I0,A,I0,A,I0,A,F0.6)') int(px(i)), ',', int(py(i)), ',', int(pz(i)), ',', ps(i)
+        write(unit,'(I0,A,I0,A,I0,A,F0.6)') int(points(i)%x), ',', int(points(i)%y), ',', int(points(i)%z), ',', points(i)%w
         totaldets = totaldets + 1
       end if
     end do

@@ -1,6 +1,6 @@
 program entropy_main
   use, intrinsic :: iso_fortran_env, only : real32, real64
-  use, intrinsic :: iso_c_binding, only : c_int
+  use, intrinsic :: iso_c_binding, only : c_int, c_signed_char
   use omp_lib
   implicit none
 
@@ -18,7 +18,7 @@ program entropy_main
 
   integer :: width, height, repeat, i
   integer :: input_size
-  integer, allocatable :: input(:)
+  integer(c_signed_char), allocatable :: input(:)
   real(real32), allocatable :: output(:), output_ref(:)
   real(real32) :: log_table(0:25)
   real(real64) :: start_time, elapsed
@@ -50,7 +50,7 @@ program entropy_main
 
   call c_srand(123_c_int)
   do i = 0, input_size - 1
-    input(i) = int(mod(c_rand(), 16_c_int))
+    input(i) = int(mod(c_rand(), 16_c_int), c_signed_char)
   end do
 
   !$omp target data map(to: input, log_table) map(from: output)
@@ -59,7 +59,7 @@ program entropy_main
     call entropy_baseline(output, input, height, width)
   end do
   elapsed = (omp_get_wtime() - start_time) / real(repeat, real64)
-  write(*,'("Average kernel (baseline) execution time ",F0.6," (s)")') elapsed
+  write(*,'("Average kernel (baseline) execution time ",F8.6," (s)")') elapsed
 
   start_time = omp_get_wtime()
   do i = 1, repeat
@@ -67,7 +67,7 @@ program entropy_main
   end do
   elapsed = (omp_get_wtime() - start_time) / real(repeat, real64)
   !$omp end target data
-  write(*,'("Average kernel (optimized) execution time ",F0.6," (s)")') elapsed
+  write(*,'("Average kernel (optimized) execution time ",F8.6," (s)")') elapsed
 
   call reference_entropy(output_ref, input, height, width)
   ok = check_entropy(output, output_ref, input_size)
@@ -82,7 +82,7 @@ contains
 
   subroutine entropy_baseline(entropy_out, values, rows, cols)
     real(real32), intent(out) :: entropy_out(0:)
-    integer, intent(in) :: values(0:)
+    integer(c_signed_char), intent(in) :: values(0:)
     integer, intent(in) :: rows, cols
     integer :: y, x, dy, dx, xx, yy, k, total
     integer :: counts(0:15)
@@ -98,7 +98,7 @@ contains
             xx = x + dx
             yy = y + dy
             if (xx >= 0 .and. yy >= 0 .and. yy < rows .and. xx < cols) then
-              counts(values(yy * cols + xx)) = counts(values(yy * cols + xx)) + 1
+              counts(int(values(yy * cols + xx))) = counts(int(values(yy * cols + xx))) + 1
               total = total + 1
             end if
           end do
@@ -119,43 +119,61 @@ contains
 
   subroutine entropy_optimized(entropy_out, values, log_table, rows, cols)
     real(real32), intent(out) :: entropy_out(0:)
-    integer, intent(in) :: values(0:)
+    integer(c_signed_char), intent(in) :: values(0:)
     real(real32), intent(in) :: log_table(0:)
     integer, intent(in) :: rows, cols
+    integer, parameter :: bsize_x = 16, bsize_y = 16
+    integer :: team_x, team_y, num_teams
+    integer :: threadIdx_x, threadIdx_y, teamIdx_x, teamIdx_y, idx
     integer :: y, x, dy, dx, xx, yy, k, total
-    integer :: counts(0:15)
+    integer :: sd_count(0:15, 0:bsize_x*bsize_y-1)
     real(real32) :: s
 
-    !$omp target teams distribute parallel do collapse(2) private(dy, dx, xx, yy, k, total, counts, s) thread_limit(256)
-    do y = 0, rows - 1
-      do x = 0, cols - 1
-        counts = 0
+    team_x = (cols + bsize_x - 1) / bsize_x
+    team_y = (rows + bsize_y - 1) / bsize_y
+    num_teams = team_x * team_y
+
+    !$omp target teams num_teams(num_teams) thread_limit(bsize_x*bsize_y) private(sd_count)
+    sd_count = 0
+    !$omp parallel private(threadIdx_x, threadIdx_y, teamIdx_x, teamIdx_y, x, y, idx, dy, dx, xx, yy, k, total, s)
+        threadIdx_x = mod(omp_get_num_threads(), bsize_x)
+        threadIdx_y = omp_get_num_threads() / bsize_x
+        teamIdx_x = mod(omp_get_num_teams(), team_x)
+        teamIdx_y = omp_get_num_teams() / team_x
+        x = teamIdx_x * bsize_x + threadIdx_x
+        y = teamIdx_y * bsize_y + threadIdx_y
+        idx = threadIdx_y * bsize_x + threadIdx_x
+
+        do k = 0, 15
+          sd_count(k, idx) = 0
+        end do
+
         total = 0
         do dy = -2, 2
           do dx = -2, 2
             xx = x + dx
             yy = y + dy
             if (xx >= 0 .and. yy >= 0 .and. yy < rows .and. xx < cols) then
-              counts(values(yy * cols + xx)) = counts(values(yy * cols + xx)) + 1
+              sd_count(int(values(yy * cols + xx)), idx) = sd_count(int(values(yy * cols + xx)), idx) + 1
               total = total + 1
             end if
           end do
         end do
-        if (total < 1) total = 1
+
         s = 0.0_real32
         do k = 0, 15
-          s = s - log_table(counts(k))
+          s = s - log_table(sd_count(k, idx))
         end do
-        entropy_out(y * cols + x) = s / real(total, real32) + &
-            log(real(total, real32)) / log(2.0_real32)
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+
+        s = s / real(total, real32) + log(real(total, real32)) / log(2.0_real32)
+        if (y < rows .and. x < cols) entropy_out(y * cols + x) = s
+    !$omp end parallel
+    !$omp end target teams
   end subroutine entropy_optimized
 
   subroutine reference_entropy(entropy_out, values, rows, cols)
     real(real32), intent(out) :: entropy_out(0:)
-    integer, intent(in) :: values(0:)
+    integer(c_signed_char), intent(in) :: values(0:)
     integer, intent(in) :: rows, cols
     integer :: y, x, dy, dx, xx, yy, k, total
     integer :: counts(0:15)
@@ -170,7 +188,7 @@ contains
             xx = x + dx
             yy = y + dy
             if (xx >= 0 .and. yy >= 0 .and. yy < rows .and. xx < cols) then
-              counts(values(yy * cols + xx)) = counts(values(yy * cols + xx)) + 1
+              counts(int(values(yy * cols + xx))) = counts(int(values(yy * cols + xx))) + 1
               total = total + 1
             end if
           end do

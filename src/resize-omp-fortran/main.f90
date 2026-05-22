@@ -72,29 +72,30 @@ contains
       input(i) = int(mod(i, 13_int64), int8)
     end do
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: input(1:in_size)) map(from: output(1:out_size))
+    start_time = omp_get_wtime()
     do i = 1, repeat
       if (bilinear) then
-        call resize_bilinear_i1(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_bilinear_i1(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       else
-        call resize_nearest_i1(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_nearest_i1(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       end if
     end do
-    !$omp end target data
     end_time = omp_get_wtime()
+    !$omp end target data
 
     if (bilinear) then
-      call host_bilinear_i1(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_bilinear_i1(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     else
-      call host_nearest_i1(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_nearest_i1(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     end if
     if (any(output /= reference)) print '(A)', 'Resize validation FAILED'
 
     elapsed_ns = (end_time - start_time) * 1.0e9_real64
     perf = real((in_size + out_size) * 1_int64, real64) * real(repeat, real64) / elapsed_ns
-    print '(A,F0.6,A,F0.6,A)', 'Average kernel execution time: ', &
-        elapsed_ns * 1.0e-3_real64 / real(repeat, real64), ' (us)    Perf: ', perf, ' (GB/s)'
+    print '(A,A,A,A,A)', 'Average kernel execution time: ', &
+        trim(format_real64(elapsed_ns * 1.0e-3_real64 / real(repeat, real64))), &
+        ' (us)    Perf: ', trim(format_real64(perf)), ' (GB/s)'
     deallocate(input, output, reference)
   end subroutine resize_image_i1
 
@@ -113,29 +114,30 @@ contains
       input(i) = int(mod(i, 13_int64), int16)
     end do
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: input(1:in_size)) map(from: output(1:out_size))
+    start_time = omp_get_wtime()
     do i = 1, repeat
       if (bilinear) then
-        call resize_bilinear_i2(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_bilinear_i2(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       else
-        call resize_nearest_i2(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_nearest_i2(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       end if
     end do
+    end_time = omp_get_wtime()
     !$omp end target data
 
-    end_time = omp_get_wtime()
     if (bilinear) then
-      call host_bilinear_i2(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_bilinear_i2(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     else
-      call host_nearest_i2(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_nearest_i2(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     end if
     if (any(output /= reference)) print '(A)', 'Resize validation FAILED'
 
     elapsed_ns = (end_time - start_time) * 1.0e9_real64
     perf = real((in_size + out_size) * 2_int64, real64) * real(repeat, real64) / elapsed_ns
-    print '(A,F0.6,A,F0.6,A)', 'Average kernel execution time: ', &
-        elapsed_ns * 1.0e-3_real64 / real(repeat, real64), ' (us)    Perf: ', perf, ' (GB/s)'
+    print '(A,A,A,A,A)', 'Average kernel execution time: ', &
+        trim(format_real64(elapsed_ns * 1.0e-3_real64 / real(repeat, real64))), &
+        ' (us)    Perf: ', trim(format_real64(perf)), ' (GB/s)'
     deallocate(input, output, reference)
   end subroutine resize_image_i2
 
@@ -154,31 +156,40 @@ contains
       input(i) = int(mod(i, 13_int64), int32)
     end do
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: input(1:in_size)) map(from: output(1:out_size))
+    start_time = omp_get_wtime()
     do i = 1, repeat
       if (bilinear) then
-        call resize_bilinear_i4(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_bilinear_i4(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       else
-        call resize_nearest_i4(output, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+        call resize_nearest_i4(output, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
       end if
     end do
+    end_time = omp_get_wtime()
     !$omp end target data
 
-    end_time = omp_get_wtime()
     if (bilinear) then
-      call host_bilinear_i4(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_bilinear_i4(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     else
-      call host_nearest_i4(reference, out_size, out_height, out_width, input, in_height, in_width, fy, fx)
+      call host_nearest_i4(reference, out_size, out_height, out_width, input, in_height, in_width, fx, fy)
     end if
     if (any(output /= reference)) print '(A)', 'Resize validation FAILED'
 
     elapsed_ns = (end_time - start_time) * 1.0e9_real64
     perf = real((in_size + out_size) * 4_int64, real64) * real(repeat, real64) / elapsed_ns
-    print '(A,F0.6,A,F0.6,A)', 'Average kernel execution time: ', &
-        elapsed_ns * 1.0e-3_real64 / real(repeat, real64), ' (us)    Perf: ', perf, ' (GB/s)'
+    print '(A,A,A,A,A)', 'Average kernel execution time: ', &
+        trim(format_real64(elapsed_ns * 1.0e-3_real64 / real(repeat, real64))), &
+        ' (us)    Perf: ', trim(format_real64(perf)), ' (GB/s)'
     deallocate(input, output, reference)
   end subroutine resize_image_i4
+
+  function format_real64(value) result(text)
+    real(real64), intent(in) :: value
+    character(len=32) :: text
+
+    write(text, '(F32.6)') value
+    text = adjustl(text)
+  end function format_real64
 
   subroutine resize_sizes(in_width, in_height, out_width, out_height, num_channels, &
                           in_image_size, out_image_size, in_size, out_size, fx, fy)
@@ -228,18 +239,29 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int8) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
     !$omp target teams distribute parallel do num_teams(29184) thread_limit(256) &
     !$omp& private(iter,in_image_size,out_image_size,c_start,c_end,y,x,in_x0,in_x1,in_y0,in_y1,in_y2) &
-    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y)
+    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y,v_00,v_01,v_10,v_11)
     do iter = 0_int64, iters_required - 1_int64
       call bilinear_indices(iter, out_height, out_width, in_height, in_width, o2i_fy, o2i_fx, &
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int32) + &
+            int(int(in_y - real(in_y0, real32), int8), int32) * int(int(v_10 - v_00, int8), int32) + &
+            int(int(in_x - real(in_x0, real32), int8), int32) * int(int(v_01 - v_00, int8), int32) + &
+            int(int(in_y - real(in_y0, real32), int8), int32) * &
+            int(int(in_x - real(in_x0, real32), int8), int32) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int8), int32), int8)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size
@@ -282,18 +304,29 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int16) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
     !$omp target teams distribute parallel do num_teams(29184) thread_limit(256) &
     !$omp& private(iter,in_image_size,out_image_size,c_start,c_end,y,x,in_x0,in_x1,in_y0,in_y1,in_y2) &
-    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y)
+    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y,v_00,v_01,v_10,v_11)
     do iter = 0_int64, iters_required - 1_int64
       call bilinear_indices(iter, out_height, out_width, in_height, in_width, o2i_fy, o2i_fx, &
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int32) + &
+            int(int(in_y - real(in_y0, real32), int16), int32) * int(int(v_10 - v_00, int16), int32) + &
+            int(int(in_x - real(in_x0, real32), int16), int32) * int(int(v_01 - v_00, int16), int32) + &
+            int(int(in_y - real(in_y0, real32), int16), int32) * &
+            int(int(in_x - real(in_x0, real32), int16), int32) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int16), int32), int16)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size
@@ -336,18 +369,29 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int32) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
     !$omp target teams distribute parallel do num_teams(29184) thread_limit(256) &
     !$omp& private(iter,in_image_size,out_image_size,c_start,c_end,y,x,in_x0,in_x1,in_y0,in_y1,in_y2) &
-    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y)
+    !$omp& private(in_offset_r0,in_offset_r1,out_idx,c,in_x,in_y,v_00,v_01,v_10,v_11)
     do iter = 0_int64, iters_required - 1_int64
       call bilinear_indices(iter, out_height, out_width, in_height, in_width, o2i_fy, o2i_fx, &
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int64) + &
+            int(int(in_y - real(in_y0, real32), int32), int64) * int(int(v_10 - v_00, int32), int64) + &
+            int(int(in_x - real(in_x0, real32), int32), int64) * int(int(v_01 - v_00, int32), int64) + &
+            int(int(in_y - real(in_y0, real32), int32), int64) * &
+            int(int(in_x - real(in_x0, real32), int32), int64) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int32), int64), int32)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size
@@ -437,6 +481,7 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int8) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
@@ -445,7 +490,17 @@ contains
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int32) + &
+            int(int(in_y - real(in_y0, real32), int8), int32) * int(int(v_10 - v_00, int8), int32) + &
+            int(int(in_x - real(in_x0, real32), int8), int32) * int(int(v_01 - v_00, int8), int32) + &
+            int(int(in_y - real(in_y0, real32), int8), int32) * &
+            int(int(in_x - real(in_x0, real32), int8), int32) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int8), int32), int8)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size
@@ -483,6 +538,7 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int16) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
@@ -491,7 +547,17 @@ contains
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int32) + &
+            int(int(in_y - real(in_y0, real32), int16), int32) * int(int(v_10 - v_00, int16), int32) + &
+            int(int(in_x - real(in_x0, real32), int16), int32) * int(int(v_01 - v_00, int16), int32) + &
+            int(int(in_y - real(in_y0, real32), int16), int32) * &
+            int(int(in_x - real(in_x0, real32), int16), int32) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int16), int32), int16)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size
@@ -529,6 +595,7 @@ contains
     integer(int64) :: iter, iters_required
     integer :: in_image_size, out_image_size, c_start, c_end, y, x, in_x0, in_x1, in_y0, in_y1, in_y2
     integer :: in_offset_r0, in_offset_r1, out_idx, c
+    integer(int32) :: v_00, v_01, v_10, v_11
     real(real32) :: in_x, in_y
 
     iters_required = output_size / channels_per_iter
@@ -537,7 +604,17 @@ contains
                             in_image_size, out_image_size, c_start, c_end, y, x, in_x, in_y, &
                             in_x0, in_x1, in_y0, in_y1, in_y2, in_offset_r0, in_offset_r1, out_idx)
       do c = c_start, c_end - 1
-        output(out_idx + 1) = input(in_offset_r0 + in_x0 + 1)
+        v_00 = input(in_offset_r0 + in_x0 + 1)
+        v_01 = input(in_offset_r0 + in_x1 + 1)
+        v_10 = input(in_offset_r1 + in_x0 + 1)
+        v_11 = input(in_offset_r1 + in_x1 + 1)
+        output(out_idx + 1) = int( &
+            int(v_00, int64) + &
+            int(int(in_y - real(in_y0, real32), int32), int64) * int(int(v_10 - v_00, int32), int64) + &
+            int(int(in_x - real(in_x0, real32), int32), int64) * int(int(v_01 - v_00, int32), int64) + &
+            int(int(in_y - real(in_y0, real32), int32), int64) * &
+            int(int(in_x - real(in_x0, real32), int32), int64) * &
+            int(int(v_11 - v_01 - v_10 + v_00, int32), int64), int32)
         in_offset_r0 = in_offset_r0 + in_image_size
         in_offset_r1 = in_offset_r1 + in_image_size
         out_idx = out_idx + out_image_size

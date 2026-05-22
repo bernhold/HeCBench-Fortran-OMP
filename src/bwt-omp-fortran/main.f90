@@ -1,6 +1,6 @@
 module bwt_mod
   use iso_fortran_env, only: int32, real64
-  use iso_c_binding, only: c_int
+  use iso_c_binding, only: c_int, c_signed_char
   use omp_lib
   implicit none
 
@@ -22,11 +22,13 @@ module bwt_mod
 contains
 
   subroutine generate_sequence(sequence, n)
-    integer(int32), intent(out) :: sequence(0:)
+    integer(c_signed_char), intent(out) :: sequence(0:)
     integer, intent(in) :: n
     integer :: i
     integer(c_int) :: pick
-    integer(int32), parameter :: alphabet(0:3) = [iachar('A'), iachar('T'), iachar('C'), iachar('G')]
+    integer(c_signed_char), parameter :: alphabet(0:3) = [ &
+      int(iachar('A'), c_signed_char), int(iachar('T'), c_signed_char), &
+      int(iachar('C'), c_signed_char), int(iachar('G'), c_signed_char)]
 
     call c_srand(123_c_int)
     do i = 0, n - 1
@@ -54,7 +56,7 @@ contains
 
   subroutine bitonic_sort_step(table, table_size, j, k, genome, n)
     integer(int32), intent(inout) :: table(0:)
-    integer(int32), intent(in) :: genome(0:)
+    integer(c_signed_char), intent(in) :: genome(0:)
     integer, intent(in) :: table_size, j, k, n
     integer :: i, ixj, t1, t2, cmp_a, cmp_b, offset
     logical :: forward, swap_entries
@@ -92,7 +94,7 @@ contains
 
   logical function compare_rotations_cpu(a, b, genome, n) result(is_less)
     integer, intent(in) :: a, b, n
-    integer(int32), intent(in) :: genome(0:)
+    integer(c_signed_char), intent(in) :: genome(0:)
     integer :: i
 
     if (a < 0) then
@@ -115,8 +117,8 @@ contains
 
   subroutine reconstruct_sequence(table, sequence, transformed, n)
     integer(int32), intent(in) :: table(0:)
-    integer(int32), intent(in) :: sequence(0:)
-    integer(int32), intent(out) :: transformed(0:)
+    integer(c_signed_char), intent(in) :: sequence(0:)
+    integer(c_signed_char), intent(out) :: transformed(0:)
     integer, intent(in) :: n
     integer :: i
 
@@ -128,8 +130,8 @@ contains
   end subroutine reconstruct_sequence
 
   subroutine bwt_gpu(sequence, transformed, suffix_table, n)
-    integer(int32), intent(in) :: sequence(0:)
-    integer(int32), intent(out) :: transformed(0:)
+    integer(c_signed_char), intent(in) :: sequence(0:)
+    integer(c_signed_char), intent(out) :: transformed(0:)
     integer(int32), allocatable, intent(out) :: suffix_table(:)
     integer, intent(in) :: n
     integer :: table_size, j, k
@@ -159,36 +161,83 @@ contains
   end subroutine bwt_gpu
 
   subroutine bwt_cpu(sequence, transformed, n)
-    integer(int32), intent(in) :: sequence(0:)
-    integer(int32), intent(out) :: transformed(0:)
+    integer(c_signed_char), intent(in) :: sequence(0:)
+    integer(c_signed_char), intent(out) :: transformed(0:)
     integer, intent(in) :: n
-    integer(int32), allocatable :: table(:)
-    integer :: i, j, tmp
+    integer(int32), allocatable :: next(:)
+    integer :: i, head
 
-    allocate(table(0:n - 1))
+    allocate(next(0:n - 1))
     do i = 0, n - 1
-      table(i) = i
+      if (i == n - 1) then
+        next(i) = -1
+      else
+        next(i) = i + 1
+      end if
+    end do
+    head = list_sort(0, next, sequence, n)
+
+    i = 0
+    do while (head >= 0)
+      transformed(i) = sequence(mod(n + head - 1, n))
+      head = next(head)
+      i = i + 1
     end do
 
-    do i = 1, n - 1
-      tmp = table(i)
-      j = i - 1
-      do while (j >= 0 .and. compare_rotations_cpu(tmp, table(j), sequence, n))
-        table(j + 1) = table(j)
-        j = j - 1
-      end do
-      table(j + 1) = tmp
-    end do
-
-    do i = 0, n - 1
-      transformed(i) = sequence(mod(n + table(i) - 1, n))
-    end do
-
-    deallocate(table)
+    deallocate(next)
   end subroutine bwt_cpu
 
+  recursive integer function list_sort(head, next, genome, n) result(sorted)
+    integer, intent(in) :: head, n
+    integer(int32), intent(inout) :: next(0:)
+    integer(c_signed_char), intent(in) :: genome(0:)
+    integer :: slow, fast, mid
+
+    if (head < 0 .or. next(head) < 0) then
+      sorted = head
+      return
+    end if
+
+    slow = head
+    fast = next(head)
+    do while (fast >= 0)
+      fast = next(fast)
+      if (fast >= 0) then
+        slow = next(slow)
+        fast = next(fast)
+      end if
+    end do
+
+    mid = next(slow)
+    next(slow) = -1
+    sorted = merge_lists(list_sort(head, next, genome, n), list_sort(mid, next, genome, n), next, genome, n)
+  end function list_sort
+
+  recursive integer function merge_lists(left, right, next, genome, n) result(head)
+    integer, intent(in) :: left, right, n
+    integer(int32), intent(inout) :: next(0:)
+    integer(c_signed_char), intent(in) :: genome(0:)
+    integer :: chosen, rest
+
+    if (left < 0) then
+      head = right
+    else if (right < 0) then
+      head = left
+    else if (compare_rotations_cpu(right, left, genome, n)) then
+      chosen = right
+      rest = next(right)
+      next(chosen) = merge_lists(left, rest, next, genome, n)
+      head = chosen
+    else
+      chosen = left
+      rest = next(left)
+      next(chosen) = merge_lists(rest, right, next, genome, n)
+      head = chosen
+    end if
+  end function merge_lists
+
   logical function arrays_equal(a, b, n) result(equal)
-    integer(int32), intent(in) :: a(0:), b(0:)
+    integer(c_signed_char), intent(in) :: a(0:), b(0:)
     integer, intent(in) :: n
     integer :: i
 
@@ -205,13 +254,15 @@ end module bwt_mod
 
 program main
   use iso_fortran_env, only: int32, real64
+  use iso_c_binding, only: c_signed_char
   use omp_lib
   use bwt_mod
   implicit none
 
   integer :: n, arg_count
   character(len=64) :: arg
-  integer(int32), allocatable :: sequence(:), cpu_seq(:), gpu_seq(:), suffix_table(:)
+  integer(c_signed_char), allocatable :: sequence(:), cpu_seq(:), gpu_seq(:)
+  integer(int32), allocatable :: suffix_table(:)
   real(real64) :: start_time, cpu_ms, gpu_ms
 
   arg_count = command_argument_count()
@@ -235,8 +286,8 @@ program main
   call bwt_gpu(sequence, gpu_seq, suffix_table, n)
   gpu_ms = (omp_get_wtime() - start_time) * 1000.0_real64
 
-  write(*,'(A,I0,A)') 'Host time: ', nint(cpu_ms), ' ms'
-  write(*,'(A,I0,A)') 'Device time: ', nint(gpu_ms), ' ms'
+  write(*,'(A,I0,A)') 'Host time: ', int(cpu_ms), ' ms'
+  write(*,'(A,I0,A)') 'Device time: ', int(gpu_ms), ' ms'
 
   if (arrays_equal(cpu_seq, gpu_seq, n)) then
     write(*,'(A)') 'PASS'

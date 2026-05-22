@@ -112,14 +112,19 @@ contains
     do while (arg <= argc)
       call get_command_argument(arg, key)
       if (trim(key) == '-h' .or. trim(key) == '--help') call usage()
-      if (arg == argc) exit
+      if (arg == argc) then
+        write(0,'(A,A)') 'option requires an argument: ', trim(key)
+        stop 1
+      end if
       call get_command_argument(arg + 1, value)
       select case (trim(key))
       case ('-x', '--lattice-n')
         read(value, *) nx
       case ('-y', '--lattice-m')
         read(value, *) ny
-      case ('-a', '--alpha')
+      case ('--alpha')
+        read(value, *) ny
+      case ('-a')
         read(value, *) alpha
       case ('-s', '--seed')
         read(value, *) seed

@@ -17,15 +17,20 @@ program main
   end interface
 
   integer, parameter :: num_elements = 10000000
+  integer, parameter :: projectile_fields = 5
+  integer, parameter :: angle_field = 1
+  integer, parameter :: velocity_field = 2
+  integer, parameter :: range_field = 3
+  integer, parameter :: total_time_field = 4
+  integer, parameter :: max_height_field = 5
   integer, parameter :: block_size = 256
   real(real32), parameter :: k_pi_value = 3.1415_real32
   real(real32), parameter :: k_g_value = 9.81_real32
 
   character(len=256) :: arg0, arg
-  integer :: repeat, i, iter, errors
-  real(real32), allocatable :: angle(:), velocity(:)
-  real(real32), allocatable :: range_out(:), time_out(:), height_out(:)
-  real(real32), allocatable :: range_ref(:), time_ref(:), height_ref(:)
+  integer :: repeat, i, iter, errors, obj
+  real(real32), allocatable :: input_vect(:), out_parallel_vect(:), out_scalar_vect(:)
+  real(real32) :: proj_angle, proj_vel, sin_value, cos_value
   real(real64) :: start_time, elapsed
 
   call get_command_argument(0, arg0)
@@ -38,46 +43,59 @@ program main
   read(arg, *) repeat
   if (repeat <= 0) stop 1
 
-  allocate(angle(num_elements), velocity(num_elements))
-  allocate(range_out(num_elements), time_out(num_elements), height_out(num_elements))
-  allocate(range_ref(num_elements), time_ref(num_elements), height_ref(num_elements))
+  allocate(input_vect(projectile_fields * num_elements))
+  allocate(out_parallel_vect(projectile_fields * num_elements))
+  allocate(out_scalar_vect(projectile_fields * num_elements))
 
+  input_vect = 0.0_real32
   call libc_srand(2_c_int)
   do i = 1, num_elements
-    angle(i) = real(mod(libc_rand(), 90_c_int) + 10_c_int, real32)
-    velocity(i) = real(mod(libc_rand(), 400_c_int) + 10_c_int, real32)
+    obj = projectile_offset(i)
+    input_vect(obj + angle_field) = real(mod(libc_rand(), 90_c_int) + 10_c_int, real32)
+    input_vect(obj + velocity_field) = real(mod(libc_rand(), 400_c_int) + 10_c_int, real32)
+    input_vect(obj + range_field) = 1.0_real32
+    input_vect(obj + total_time_field) = 1.0_real32
+    input_vect(obj + max_height_field) = 1.0_real32
   end do
 
-  range_out = 0.0_real32
-  time_out = 0.0_real32
-  height_out = 0.0_real32
+  out_parallel_vect = 0.0_real32
+  out_scalar_vect = 0.0_real32
 
-  !$omp target data map(to: angle(1:num_elements), velocity(1:num_elements)) &
-  !$omp& map(from: range_out(1:num_elements), time_out(1:num_elements), height_out(1:num_elements))
+  !$omp target data map(to: input_vect(1:projectile_fields*num_elements)) &
+  !$omp& map(from: out_parallel_vect(1:projectile_fields*num_elements))
   start_time = omp_get_wtime()
   do iter = 1, repeat
     !$omp target teams distribute parallel do thread_limit(block_size)
     do i = 1, num_elements
-      call compute_projectile(angle(i), velocity(i), range_out(i), time_out(i), height_out(i))
+      obj = (i - 1) * projectile_fields
+      proj_angle = input_vect(obj + angle_field)
+      proj_vel = input_vect(obj + velocity_field)
+      sin_value = sin(proj_angle * k_pi_value / 180.0_real32)
+      cos_value = cos(proj_angle * k_pi_value / 180.0_real32)
+      out_parallel_vect(obj + total_time_field) = abs(2.0_real32 * proj_vel * sin_value) / k_g_value
+      out_parallel_vect(obj + range_field) = abs(proj_vel * out_parallel_vect(obj + total_time_field) * cos_value)
+      out_parallel_vect(obj + angle_field) = proj_angle
+      out_parallel_vect(obj + velocity_field) = proj_vel
+      out_parallel_vect(obj + max_height_field) = (proj_vel * proj_vel * sin_value * sin_value) / 2.0_real32 * k_g_value
     end do
     !$omp end target teams distribute parallel do
   end do
   elapsed = omp_get_wtime() - start_time
   !$omp end target data
 
-  write(*,'(A,F0.6,A)') 'Average kernel execution time: ', elapsed / real(repeat, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'Average kernel execution time: ', elapsed / real(repeat, real64), ' (s)'
 
   do i = 1, num_elements
-    call compute_projectile(angle(i), velocity(i), range_ref(i), time_ref(i), height_ref(i))
+    obj = projectile_offset(i)
+    call compute_projectile(input_vect(obj + angle_field), input_vect(obj + velocity_field), &
+                            out_scalar_vect(obj + 1:obj + projectile_fields))
   end do
 
   errors = 0
   do i = 1, num_elements
-    if (abs(angle(i) - angle(i)) > 1.0_real32 .or. &
-        abs(velocity(i) - velocity(i)) > 1.0_real32 .or. &
-        abs(range_out(i) - range_ref(i)) > 1.0_real32 .or. &
-        abs(time_out(i) - time_ref(i)) > 1.0_real32 .or. &
-        abs(height_out(i) - height_ref(i)) > 1.0_real32) then
+    obj = projectile_offset(i)
+    if (projectile_differs(out_parallel_vect(obj + 1:obj + projectile_fields), &
+                           out_scalar_vect(obj + 1:obj + projectile_fields))) then
       errors = errors + 1
       exit
     end if
@@ -89,20 +107,38 @@ program main
     write(*,'(A)') 'FAIL'
   end if
 
-  deallocate(angle, velocity, range_out, time_out, height_out, range_ref, time_ref, height_ref)
+  deallocate(input_vect, out_parallel_vect, out_scalar_vect)
 
 contains
 
-  subroutine compute_projectile(proj_angle, proj_vel, max_range, total_time, max_height)
-    real(real32), intent(in) :: proj_angle, proj_vel
-    real(real32), intent(out) :: max_range, total_time, max_height
-    real(real32) :: sin_value, cos_value
+  integer function projectile_offset(index)
+    integer, intent(in) :: index
 
-    sin_value = sin(proj_angle * k_pi_value / 180.0_real32)
-    cos_value = cos(proj_angle * k_pi_value / 180.0_real32)
-    total_time = abs(2.0_real32 * proj_vel * sin_value) / k_g_value
-    max_range = abs(proj_vel * total_time * cos_value)
-    max_height = (proj_vel * proj_vel * sin_value * sin_value) / 2.0_real32 * k_g_value
+    projectile_offset = (index - 1) * projectile_fields
+  end function projectile_offset
+
+  subroutine compute_projectile(proj_angle, proj_vel, pObj)
+    real(real32), intent(in) :: proj_angle, proj_vel
+    real(real32), intent(out) :: pObj(projectile_fields)
+    real(real32) :: ref_sin_value, ref_cos_value
+
+    ref_sin_value = sin(proj_angle * k_pi_value / 180.0_real32)
+    ref_cos_value = cos(proj_angle * k_pi_value / 180.0_real32)
+    pObj(total_time_field) = abs(2.0_real32 * proj_vel * ref_sin_value) / k_g_value
+    pObj(range_field) = abs(proj_vel * pObj(total_time_field) * ref_cos_value)
+    pObj(angle_field) = proj_angle
+    pObj(velocity_field) = proj_vel
+    pObj(max_height_field) = (proj_vel * proj_vel * ref_sin_value * ref_sin_value) / 2.0_real32 * k_g_value
   end subroutine compute_projectile
+
+  logical function projectile_differs(a, b)
+    real(real32), intent(in) :: a(projectile_fields), b(projectile_fields)
+
+    projectile_differs = abs(a(angle_field) - b(angle_field)) > 1.0_real32 .or. &
+                         abs(a(velocity_field) - b(velocity_field)) > 1.0_real32 .or. &
+                         abs(a(range_field) - b(range_field)) > 1.0_real32 .or. &
+                         abs(a(total_time_field) - b(total_time_field)) > 1.0_real32 .or. &
+                         abs(a(max_height_field) - b(max_height_field)) > 1.0_real32
+  end function projectile_differs
 
 end program main

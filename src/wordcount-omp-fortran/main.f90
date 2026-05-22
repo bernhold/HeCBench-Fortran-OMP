@@ -20,6 +20,7 @@ program main
   integer(int64) :: start_ns, end_ns, elapsed_ns
   integer(int64), save :: rng_state = 1_int64
   real(real64) :: avg_s
+  character(len=32) :: avg_text
   logical :: ok
 
   call get_command_argument(0, arg0)
@@ -30,7 +31,6 @@ program main
 
   call get_command_argument(1, arg1)
   read(arg1, *) repeat
-  repeat = max(1_int32, repeat)
 
   print '(A)', 'Text sample:'
   write(*, '(A)') raw_input
@@ -71,13 +71,14 @@ program main
 
   print '(A,I0)', 'Performance evaluation for random texts of character length ', len_large
   start_ns = int(omp_get_wtime() * 1.0d9, int64)
-  do i = 1, repeat
+  do i = 0, repeat - 1
     wc_device = word_count(random_input)
   end do
   end_ns = int(omp_get_wtime() * 1.0d9, int64)
   elapsed_ns = end_ns - start_ns
   avg_s = real(elapsed_ns, real64) * 1.0d-9 / real(repeat, real64)
-  print '(A,F0.6,A)', 'Average time of word count: ', avg_s, ' (s)'
+  avg_text = format_default_float(avg_s)
+  print '(3A)', 'Average time of word count: ', trim(avg_text), ' (s)'
 
   deallocate(input)
   deallocate(random_input)
@@ -95,6 +96,13 @@ contains
     if (rng_state < 0_int64) rng_state = rng_state + 2147483648_int64
     if (rng_state == 0_int64) rng_state = 1_int64
   end subroutine rng_seed
+
+  character(len=32) function format_default_float(value) result(text)
+    real(real64), intent(in) :: value
+    text = ''
+    write(text, '(F0.7)') value
+    if (text(1:1) == '.') text = '0' // text(1:len(text)-1)
+  end function format_default_float
 
   logical function is_alpha(c) result(res)
     character(len=1), intent(in) :: c

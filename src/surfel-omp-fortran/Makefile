@@ -3,6 +3,7 @@
 #===============================================================================
 
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  = yes
 DEBUG     = no
 DEVICE    = gpu
@@ -15,20 +16,24 @@ LAUNCHER  =
 
 program = main
 source = main.f90
-obj = $(source:.f90=.o)
+cxx_source = surfel_rng.cpp
+obj = $(source:.f90=.o) $(cxx_source:.cpp=.o)
 
 #===============================================================================
 # Sets Flags
 #===============================================================================
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
+CXXFLAGS := $(EXTRA_CXXFLAGS) -std=c++17 -Wall
 
 ifeq ($(DEBUG),yes)
   FFLAGS += -g
+  CXXFLAGS += -g
 endif
 
 ifeq ($(OPTIMIZE),yes)
   FFLAGS += -O3
+  CXXFLAGS += -O3
 endif
 
 ifeq ($(DEVICE),gpu)
@@ -37,7 +42,7 @@ else
   FFLAGS += -fopenmp
 endif
 
-LDFLAGS =
+LDFLAGS = -lstdc++
 
 #===============================================================================
 # Targets to Build
@@ -48,6 +53,9 @@ $(program): $(obj)
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj) *.mod

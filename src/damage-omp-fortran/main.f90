@@ -53,22 +53,22 @@ program main
   !$omp target data map(to: nlist(1:n), family(1:m)) map(from: n_neigh(1:m), damage(1:m))
   start_time = omp_get_wtime()
   do i = 1, repeat
-    call damage_kernel(n, m, nlist, family, n_neigh, damage)
+    call damage_of_node(n, m, nlist, family, n_neigh, damage)
   end do
   elapsed = omp_get_wtime() - start_time
   !$omp end target data
-  write(*,'(A,F0.6,A)') 'Average kernel execution time ', elapsed / real(repeat, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'Average kernel execution time ', elapsed / real(repeat, real64), ' (s)'
 
   call validate(n, m, nlist, family, n_neigh, damage)
 
   !$omp target data map(to: nlist(1:n), family(1:m)) map(from: n_neigh(1:m), damage(1:m))
   start_time = omp_get_wtime()
   do i = 1, repeat
-    call damage_kernel(n, m, nlist, family, n_neigh, damage)
+    call damage_of_node_optimized(m, n, nlist, family, n_neigh, damage)
   end do
   elapsed = omp_get_wtime() - start_time
   !$omp end target data
-  write(*,'(A,F0.6,A)') 'Average kernel execution time ', elapsed / real(repeat, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'Average kernel execution time ', elapsed / real(repeat, real64), ' (s)'
 
   call validate(n, m, nlist, family, n_neigh, damage)
 
@@ -76,26 +76,76 @@ program main
 
 contains
 
-  subroutine damage_kernel(n, m, nlist, family, n_neigh, damage)
+  subroutine damage_of_node(n, m, nlist, family, n_neigh, damage)
     integer, intent(in) :: n, m
     integer, intent(in) :: nlist(n), family(m)
     integer, intent(out) :: n_neigh(m)
     real(real64), intent(out) :: damage(m)
-    integer :: gid, j, lower, upper, sum
+    integer :: local_cache(block_size)
+    integer :: local_id, local_size, nid, global_id, step, neighbours
 
-    !$omp target teams distribute parallel do private(lower, upper, sum, j) thread_limit(block_size)
-    do gid = 1, m
-      lower = (gid - 1) * block_size + 1
-      upper = min(gid * block_size, n)
-      sum = 0
-      do j = lower, upper
-        if (nlist(j) /= -1) sum = sum + 1
-      end do
-      n_neigh(gid) = sum
-      damage(gid) = 1.0_real64 - real(sum, real64) / real(family(gid), real64)
+    !$omp target teams num_teams((n + block_size - 1) / block_size) thread_limit(block_size) &
+    !$omp& private(local_cache)
+    !$omp parallel shared(local_cache) private(local_id, local_size, nid, global_id, step, neighbours)
+    local_id = omp_get_thread_num()
+    local_size = block_size
+    nid = omp_get_team_num()
+    global_id = nid * local_size + local_id + 1
+
+    if (global_id <= n) then
+      if (nlist(global_id) /= -1) then
+        local_cache(local_id + 1) = 1
+      else
+        local_cache(local_id + 1) = 0
+      end if
+    else
+      local_cache(local_id + 1) = 0
+    end if
+
+    !$omp barrier
+
+    step = local_size / 2
+    do while (step > 0)
+      if (local_id < step) then
+        local_cache(local_id + 1) = local_cache(local_id + 1) + local_cache(local_id + step + 1)
+      end if
+      !$omp barrier
+      step = step / 2
     end do
-    !$omp end target teams distribute parallel do
-  end subroutine damage_kernel
+
+    if (local_id == 0 .and. nid < m) then
+      neighbours = local_cache(1)
+      n_neigh(nid + 1) = neighbours
+      damage(nid + 1) = 1.0_real64 - real(neighbours, real64) / real(family(nid + 1), real64)
+    end if
+    !$omp end parallel
+    !$omp end target teams
+  end subroutine damage_of_node
+
+  subroutine damage_of_node_optimized(m, n, nlist, family, n_neigh, damage)
+    integer, intent(in) :: m, n
+    integer, intent(in) :: nlist(n), family(m)
+    integer, intent(out) :: n_neigh(m)
+    real(real64), intent(out) :: damage(m)
+    integer :: nid, idx, lower, upper, sum
+
+    !$omp target teams distribute num_teams(m) private(lower, upper, sum, idx)
+    do nid = 1, m
+      lower = (nid - 1) * block_size + 1
+      upper = min(nid * block_size, n)
+      sum = 0
+
+      !$omp parallel do reduction(+:sum) num_threads(block_size)
+      do idx = lower, upper
+        if (nlist(idx) /= -1) sum = sum + 1
+      end do
+      !$omp end parallel do
+
+      n_neigh(nid) = sum
+      damage(nid) = 1.0_real64 - real(sum, real64) / real(family(nid), real64)
+    end do
+    !$omp end target teams distribute
+  end subroutine damage_of_node_optimized
 
   subroutine validate(n, m, nlist, family, n_neigh, damage)
     integer, intent(in) :: n, m

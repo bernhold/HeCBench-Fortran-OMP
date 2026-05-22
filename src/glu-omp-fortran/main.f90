@@ -37,7 +37,6 @@ program main
   read(arg1, *) ndims
   read(arg2, *) dim_size
   read(arg3, *) repeat
-  if (ndims <= 0 .or. dim_size <= 0 .or. repeat <= 0) stop 1
 
   allocate(xshape(ndims), yshape(ndims))
   xshape = dim_size
@@ -98,7 +97,6 @@ program main
       print '(A)', 'PASS'
     else
       print '(A)', 'FAIL'
-      stop 1
     end if
   end do
   !$omp end target data

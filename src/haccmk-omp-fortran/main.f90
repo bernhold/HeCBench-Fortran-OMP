@@ -115,9 +115,11 @@ contains
     !$omp target data map(to: xx(1:ilp), yy(1:ilp), zz(1:ilp), mass(1:ilp)) &
     !$omp& map(from: vx2(1:n), vy2(1:n), vz2(1:n))
     do rep = 1, repeat
-      !$omp target update to(vx2(1:n), vy2(1:n), vz2(1:n))
+      !$omp target update to(vx2(1:n))
+      !$omp target update to(vy2(1:n))
+      !$omp target update to(vz2(1:n))
       start_time = omp_get_wtime()
-      !$omp target teams distribute parallel do private(dxc, dyc, dzc, m, r2, f, xi, yi, zi, xxi, yyi, zzi, j) thread_limit(256)
+      !$omp target teams distribute parallel do private(dxc, dyc, dzc, m, r2, f, xi, yi, zi, xxi, yyi, zzi, j)
       do idx = 1, n
         xi = 0.0_real32
         yi = 0.0_real32
@@ -152,7 +154,7 @@ contains
     end do
     !$omp end target data
 
-    print '(A,F0.6,A)', 'Average kernel execution time ', total_time / real(repeat, real64), ' (s)'
+    print '(A,F8.6,A)', 'Average kernel execution time ', total_time / real(repeat, real64), ' (s)'
   end subroutine haccmk
 
   subroutine haccmk_gold(count1, xxi, yyi, zzi, fsrrmax2, mp_rsm2, xx1, yy1, zz1, mass1, dxi, dyi, dzi)

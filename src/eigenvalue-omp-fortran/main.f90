@@ -55,8 +55,6 @@ program main
   !$omp& map(alloc: counts(0:length - 1), eig0(0:2 * length - 1), eig1(0:2 * length - 1))
   if (iterations /= 1) then
     do i = 1, 2
-      call initialize_intervals(eig0, lower_limit, upper_limit, length)
-      eig1 = upper_limit
       call run_kernels(diagonal, off_diagonal, counts, eig0, eig1, length, tolerance, active)
     end do
   end if
@@ -65,8 +63,6 @@ program main
   write(*,'(A)') '-------------------------------------------'
   start_time = omp_get_wtime()
   do i = 1, iterations
-    call initialize_intervals(eig0, lower_limit, upper_limit, length)
-    eig1 = upper_limit
     call run_kernels(diagonal, off_diagonal, counts, eig0, eig1, length, tolerance, active)
   end do
   end_time = omp_get_wtime()

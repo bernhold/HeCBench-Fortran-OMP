@@ -26,25 +26,24 @@ program main
   pi = acos(-1.0_real64)
 
   print '(A)'
-  print '(A)'
   print '(A)', ' MMS heat equation'
   print '(A)'
   print '(A)', '--------------------'
   print '(A)', 'Problem input'
   print '(A)'
   print '(A,I0,A,I0)', ' Grid size: ', n, ' x ', n
-  print '(A,ES13.6E2)', ' Cell width: ', dx
-  print '(A,F0.6,A,F0.6)', ' Grid length: ', length, ' x ', length
+  print '(A,ES12.6E2)', ' Cell width: ', dx
+  print '(A,F11.6,A,F11.6)', ' Grid length: ', length, ' x ', length
   print '(A)'
-  print '(A,ES13.6E2)', ' Alpha: ', alpha
+  print '(A,ES12.6E2)', ' Alpha: ', alpha
   print '(A)'
   print '(A,I0)', ' Steps: ', nsteps
-  print '(A,ES13.6E2)', ' Total time: ', dt * real(nsteps, real64)
-  print '(A,ES13.6E2)', ' Time step: ', dt
+  print '(A,ES12.6E2)', ' Total time: ', dt * real(nsteps, real64)
+  print '(A,ES12.6E2)', ' Time step: ', dt
   print '(A)', '--------------------'
   print '(A)', 'Stability'
   print '(A)'
-  print '(A,F0.6)', ' r value: ', r
+  print '(A,F8.6)', ' r value: ', r
   if (r > 0.5_real64) print '(A)', ' Warning: unstable'
   print '(A)', '--------------------'
 
@@ -74,10 +73,10 @@ program main
 
   print '(A)', 'Results'
   print '(A)'
-  print '(A,ES13.6E2)', 'Error (L2norm): ', norm
-  print '(A,F0.6)', 'Solve time (s): ', toc - tic
-  print '(A,F0.6)', 'Total time (s): ', stop_total - start_total
-  print '(A,F0.6)', 'Bandwidth (GB/s): ', bandwidth
+  print '(A,ES12.6E2)', 'Error (L2norm): ', norm
+  print '(A,F8.6)', 'Solve time (s): ', toc - tic
+  print '(A,F8.6)', 'Total time (s): ', stop_total - start_total
+  print '(A,F8.6)', 'Bandwidth (GB/s): ', bandwidth
   print '(A)', '--------------------'
 
   deallocate(u, u_tmp)
@@ -103,6 +102,12 @@ contains
         y = real(j + 1, real64) * dx
         x = real(i + 1, real64) * dx
         u(i + j * n + 1) = sin(pi * x / length) * sin(pi * y / length)
+      end do
+    end do
+    !$omp end target teams distribute parallel do
+    !$omp target teams distribute parallel do collapse(2) thread_limit(256)
+    do j = 0, n - 1
+      do i = 0, n - 1
         u_tmp(i + j * n + 1) = 0.0_real64
       end do
     end do

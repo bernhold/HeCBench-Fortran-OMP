@@ -21,8 +21,8 @@ program main
   write(*,*)
 
   num_gpus = 1
-  write(*,'(A,I0)') 'number of host CPUs:    ', omp_get_num_procs()
-  write(*,'(A,I0)') 'number of devices:      ', num_gpus
+  write(*,'(A,I0)') 'number of host CPUs:' // achar(9), omp_get_num_procs()
+  write(*,'(A,I0)') 'number of devices:' // achar(9), num_gpus
 
   nwords = int(num_gpus, int64) * nwords_per_gpu
   b = 3
@@ -41,7 +41,7 @@ program main
       !$omp end parallel
       end_time = omp_get_wtime()
 
-      write(*,'(A,F0.6,A,I0,A)') 'Work took ', end_time - start_time, &
+      write(*,'(A,F8.6,A,I0,A)') 'Work took ', end_time - start_time, &
         ' seconds with ', num_threads, ' CPU threads'
 
       if (f == 1) then
@@ -63,25 +63,25 @@ program main
     end do
   end do
 
-  write(*,'(A,F0.6,A)') 'Runtime overhead of first run is ', overhead, ' seconds'
+  write(*,'(A,F8.6,A)') 'Runtime overhead of first run is ', overhead, ' seconds'
   deallocate(a)
 
 contains
 
   subroutine run_thread_partition(a, nwords, repeat, b)
-    integer(int32), intent(inout) :: a(0:)
+    integer(int32), intent(inout), target :: a(0:)
     integer(int64), intent(in) :: nwords
     integer, intent(in) :: repeat, b
     integer :: cpu_thread_id, num_cpu_threads
     integer :: j
     integer(int64) :: nwords_per_kernel, first, n
-    integer(int32), allocatable :: sub_a(:)
+    integer(int32), pointer :: sub_a(:)
 
     cpu_thread_id = omp_get_thread_num()
     num_cpu_threads = omp_get_num_threads()
     nwords_per_kernel = nwords / int(num_cpu_threads, int64)
     first = int(cpu_thread_id, int64) * nwords_per_kernel
-    allocate(sub_a(0:nwords_per_kernel - 1_int64))
+    sub_a(0:nwords_per_kernel - 1_int64) => a(first:first + nwords_per_kernel - 1_int64)
 
     do n = 0_int64, nwords_per_kernel - 1_int64
       sub_a(n) = int(first + n, int32)
@@ -96,11 +96,6 @@ contains
     end do
     !$omp end target teams distribute parallel do
     !$omp end target data
-
-    do n = 0_int64, nwords_per_kernel - 1_int64
-      a(first + n) = sub_a(n)
-    end do
-    deallocate(sub_a)
   end subroutine run_thread_partition
 
   logical function correct_result(data, nwords, b, repeat)

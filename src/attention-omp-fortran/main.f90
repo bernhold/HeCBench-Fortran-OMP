@@ -117,42 +117,45 @@ contains
     score = 0.0_real32
     output = 0.0_real32
 
-    start_time = omp_get_wtime()
-    do iter = 1, repeat
-      exp_sum = 0.0_real32
-      !$omp target teams distribute parallel do thread_limit(256) reduction(+:exp_sum) private(i, j, idx, local_sum) &
-      !$omp& map(to: key(1:n*d), query(1:d)) map(from: dot_product(1:n))
-      do i = 1, n
-        local_sum = 0.0_real32
-        do j = 1, d
-          idx = (i - 1) * d + j
-          local_sum = local_sum + key(idx) * query(j)
-        end do
-        dot_product(i) = local_sum
-        exp_sum = exp_sum + exp(local_sum)
-      end do
-      !$omp end target teams distribute parallel do
+    !$omp target data map(to: key(1:n*d), value(1:n*d), query(1:d)) &
+    !$omp& map(alloc: dot_product(1:n), score(1:n), exp_sum) map(from: output(1:d))
+      start_time = omp_get_wtime()
+      do iter = 1, repeat
+        exp_sum = 0.0_real32
+        !$omp target update to(exp_sum)
 
-      !$omp target teams distribute parallel do thread_limit(256) private(i) &
-      !$omp& map(to: dot_product(1:n), exp_sum) map(from: score(1:n))
-      do i = 1, n
-        score(i) = exp(dot_product(i)) / exp_sum
-      end do
-      !$omp end target teams distribute parallel do
-
-      !$omp target teams distribute parallel do thread_limit(256) private(i, j, idx, local_sum) &
-      !$omp& map(to: score(1:n), value(1:n*d)) map(from: output(1:d))
-      do j = 1, d
-        local_sum = 0.0_real32
+        !$omp target teams distribute parallel do thread_limit(256) private(i, j, idx, local_sum)
         do i = 1, n
-          idx = (i - 1) * d + j
-          local_sum = local_sum + score(i) * value(idx)
+          local_sum = 0.0_real32
+          do j = 1, d
+            idx = (i - 1) * d + j
+            local_sum = local_sum + key(idx) * query(j)
+          end do
+          dot_product(i) = local_sum
+          !$omp atomic update
+          exp_sum = exp_sum + exp(local_sum)
         end do
-        output(j) = local_sum
+        !$omp end target teams distribute parallel do
+
+        !$omp target teams distribute parallel do thread_limit(256) private(i)
+        do i = 1, n
+          score(i) = exp(dot_product(i)) / exp_sum
+        end do
+        !$omp end target teams distribute parallel do
+
+        !$omp target teams distribute parallel do thread_limit(256) private(i, j, idx, local_sum)
+        do j = 1, d
+          local_sum = 0.0_real32
+          do i = 1, n
+            idx = (i - 1) * d + j
+            local_sum = local_sum + score(i) * value(idx)
+          end do
+          output(j) = local_sum
+        end do
+        !$omp end target teams distribute parallel do
       end do
-      !$omp end target teams distribute parallel do
-    end do
-    end_time = omp_get_wtime()
+      end_time = omp_get_wtime()
+    !$omp end target data
 
     elapsed_ms = (end_time - start_time) * 1.0e3_real64 / real(repeat, real64)
     print '(A,F0.6,A)', 'Average execution time of kernels ', elapsed_ms, ' (ms)'

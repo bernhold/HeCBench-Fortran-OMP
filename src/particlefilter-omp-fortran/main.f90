@@ -1,5 +1,5 @@
 program main
-  use, intrinsic :: iso_fortran_env, only : int32, int64, real32, real64
+  use, intrinsic :: iso_fortran_env, only : int8, int32, int64, real32, real64
   use omp_lib
   implicit none
 
@@ -16,7 +16,8 @@ program main
 
   character(len=256) :: arg
   integer(int32) :: iszx, iszy, nfr, nparticles
-  integer(int32), allocatable :: seed(:), image(:)
+  integer(int32), allocatable :: seed(:)
+  integer(int8), allocatable :: image(:)
   real(real64) :: start_time, end_video_sequence, end_particle_filter
 
   if (command_argument_count() /= 8) then
@@ -74,17 +75,17 @@ program main
   call initialize_seed(seed)
 
   allocate(image(0:iszx * iszy * nfr - 1))
-  image = 0_int32
+  image = to_byte(0_int32)
 
   start_time = wall_time_seconds()
   call video_sequence(image, iszx, iszy, nfr, seed)
   end_video_sequence = wall_time_seconds()
-  write(*,'(A,F0.6,A)') 'VIDEO SEQUENCE TOOK ', real(end_video_sequence - start_time, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'VIDEO SEQUENCE TOOK ', real(end_video_sequence - start_time, real64), ' (s)'
 
   call particle_filter(image, iszx, iszy, nfr, seed, nparticles)
   end_particle_filter = wall_time_seconds()
-  write(*,'(A,F0.6,A)') 'PARTICLE FILTER TOOK ', real(end_particle_filter - end_video_sequence, real64), ' (s)'
-  write(*,'(A,F0.6,A)') 'ENTIRE PROGRAM TOOK ', real(end_particle_filter - start_time, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'PARTICLE FILTER TOOK ', real(end_particle_filter - end_video_sequence, real64), ' (s)'
+  write(*,'(A,F8.6,A)') 'ENTIRE PROGRAM TOOK ', real(end_particle_filter - start_time, real64), ' (s)'
 
   deallocate(seed, image)
 
@@ -168,16 +169,32 @@ contains
     byte = modulo(truncated, 256_int32)
   end function to_u8_from_real
 
+  integer(int8) function to_byte(value) result(byte)
+    integer(int32), intent(in) :: value
+    integer(int32) :: wrapped
+
+    wrapped = modulo(value, 256_int32)
+    if (wrapped > 127_int32) wrapped = wrapped - 256_int32
+    byte = int(wrapped, int8)
+  end function to_byte
+
+  integer(int32) function byte_as_int(byte) result(value)
+    integer(int8), intent(in) :: byte
+
+    value = int(byte, int32)
+    if (value < 0_int32) value = value + 256_int32
+  end function byte_as_int
+
   subroutine set_if(test_value, new_value, array3d, dimx, dimy, dimz)
     integer(int32), intent(in) :: test_value, new_value, dimx, dimy, dimz
-    integer(int32), intent(inout) :: array3d(0:)
+    integer(int8), intent(inout) :: array3d(0:)
     integer(int32) :: x, y, z, idx
 
     do x = 0, dimx - 1
       do y = 0, dimy - 1
         do z = 0, dimz - 1
           idx = x * dimy * dimz + y * dimz + z
-          if (array3d(idx) == test_value) array3d(idx) = new_value
+          if (byte_as_int(array3d(idx)) == test_value) array3d(idx) = to_byte(new_value)
         end do
       end do
     end do
@@ -185,7 +202,8 @@ contains
 
   subroutine add_noise(array3d, dimx, dimy, dimz, seed)
     integer(int32), intent(in) :: dimx, dimy, dimz
-    integer(int32), intent(inout) :: array3d(0:), seed(0:)
+    integer(int8), intent(inout) :: array3d(0:)
+    integer(int32), intent(inout) :: seed(0:)
     integer(int32) :: x, y, z, idx, noise
 
     do x = 0, dimx - 1
@@ -193,7 +211,7 @@ contains
         do z = 0, dimz - 1
           idx = x * dimy * dimz + y * dimz + z
           noise = to_u8_from_real(5.0_real32 * randn(seed, 0))
-          array3d(idx) = modulo(array3d(idx) + noise, 256_int32)
+          array3d(idx) = to_byte(byte_as_int(array3d(idx)) + noise)
         end do
       end do
     end do
@@ -220,7 +238,7 @@ contains
   end subroutine strel_disk
 
   subroutine dilate_matrix(matrix, posx, posy, posz, dimx, dimy, dimz, error_radius)
-    integer(int32), intent(inout) :: matrix(0:)
+    integer(int8), intent(inout) :: matrix(0:)
     integer(int32), intent(in) :: posx, posy, posz, dimx, dimy, dimz, error_radius
     integer(int32) :: startx, starty, endx, endy, x, y
     real(real32) :: distance
@@ -245,21 +263,21 @@ contains
     do x = startx, endx - 1
       do y = starty, endy - 1
         distance = sqrt(real((x - posx) * (x - posx) + (y - posy) * (y - posy), real32))
-        if (distance < real(error_radius, real32)) matrix(x * dimy * dimz + y * dimz + posz) = 1_int32
+        if (distance < real(error_radius, real32)) matrix(x * dimy * dimz + y * dimz + posz) = to_byte(1_int32)
       end do
     end do
   end subroutine dilate_matrix
 
   subroutine imdilate_disk(matrix, dimx, dimy, dimz, error_radius, new_matrix)
-    integer(int32), intent(in) :: matrix(0:)
-    integer(int32), intent(inout) :: new_matrix(0:)
+    integer(int8), intent(in) :: matrix(0:)
+    integer(int8), intent(inout) :: new_matrix(0:)
     integer(int32), intent(in) :: dimx, dimy, dimz, error_radius
     integer(int32) :: x, y, z
 
     do z = 0, dimz - 1
       do x = 0, dimx - 1
         do y = 0, dimy - 1
-          if (matrix(x * dimy * dimz + y * dimz + z) == 1_int32) then
+          if (byte_as_int(matrix(x * dimy * dimz + y * dimz + z)) == 1_int32) then
             call dilate_matrix(new_matrix, x, y, z, dimx, dimy, dimz, error_radius)
           end if
         end do
@@ -288,25 +306,26 @@ contains
 
   subroutine video_sequence(image, iszx, iszy, nfr, seed)
     integer(int32), intent(in) :: iszx, iszy, nfr
-    integer(int32), intent(inout) :: image(0:), seed(0:)
-    integer(int32), allocatable :: new_matrix(:)
+    integer(int8), intent(inout) :: image(0:)
+    integer(int32), intent(inout) :: seed(0:)
+    integer(int8), allocatable :: new_matrix(:)
     integer(int32) :: k, max_size, x0, y0, xk, yk, pos, x, y
 
     max_size = iszx * iszy * nfr
     x0 = round_float(real(iszy, real32) / 2.0_real32)
     y0 = round_float(real(iszx, real32) / 2.0_real32)
-    image(x0 * iszy * nfr + y0 * nfr) = 1_int32
+    image(x0 * iszy * nfr + y0 * nfr) = to_byte(1_int32)
 
     do k = 1, nfr - 1
       xk = abs(x0 + (k - 1_int32))
       yk = abs(y0 - 2_int32 * (k - 1_int32))
       pos = yk * iszy * nfr + xk * nfr + k
       if (pos >= max_size) pos = 0_int32
-      image(pos) = 1_int32
+      image(pos) = to_byte(1_int32)
     end do
 
     allocate(new_matrix(0:max_size - 1))
-    new_matrix = 0_int32
+    new_matrix = to_byte(0_int32)
     call imdilate_disk(image, iszx, iszy, nfr, 5_int32, new_matrix)
     do x = 0, iszx - 1
       do y = 0, iszy - 1
@@ -323,7 +342,8 @@ contains
   end subroutine video_sequence
 
   subroutine particle_filter(image, iszx, iszy, nfr, seed, nparticles)
-    integer(int32), intent(in) :: image(0:), iszx, iszy, nfr, nparticles
+    integer(int8), intent(in) :: image(0:)
+    integer(int32), intent(in) :: iszx, iszy, nfr, nparticles
     integer(int32), intent(inout) :: seed(0:)
     integer(int32), allocatable :: disk(:), objxy(:), ind(:)
     real(real32), allocatable :: weights(:), likelihood(:), partial_sums(:), arrayx(:), arrayy(:)
@@ -381,16 +401,16 @@ contains
     end do
     end_time = wall_time_seconds()
     if (nfr > 1_int32) then
-      write(*,'(A,F0.6,A)') 'Average execution time of kernels: ', &
+      write(*,'(A,F8.6,A)') 'Average execution time of kernels: ', &
         real((end_time - start_time) / real(nfr - 1_int32, real64), real64), ' (s)'
     else
-      write(*,'(A,F0.6,A)') 'Average execution time of kernels: ', 0.0_real64, ' (s)'
+      write(*,'(A,F8.6,A)') 'Average execution time of kernels: ', 0.0_real64, ' (s)'
     end if
 
     !$omp end target data
 
     offload_end = wall_time_seconds()
-    write(*,'(A,F0.6,A)') 'Device offloading time: ', real(offload_end - offload_start, real64), ' (s)'
+    write(*,'(A,F8.6,A)') 'Device offloading time: ', real(offload_end - offload_start, real64), ' (s)'
 
     xe = 0.0_real32
     ye = 0.0_real32
@@ -416,70 +436,91 @@ contains
     real(real32), intent(inout) :: arrayx(0:), arrayy(0:), weights(0:), likelihood(0:), partial_sums(0:)
     real(real32), intent(in) :: xj(0:), yj(0:)
     integer(int32), intent(inout) :: ind(0:), seed(0:)
-    integer(int32), intent(in) :: objxy(0:), image(0:)
-    integer(int32) :: i, y, ix, iy, rnd_ix, rnd_iy, indx, indy, block
-    real(real32) :: ur, vr, likelihood_sum, wsum
+    integer(int32), intent(in) :: objxy(0:)
+    integer(int8), intent(in) :: image(0:)
+    integer(int32) :: i, y, ix, iy, rnd_ix, rnd_iy, indx, indy
+    integer(int32) :: team_id, thread_id, block_dim, s
+    real(real32) :: ur, vr, likelihood_sum
 
-    !$omp target teams distribute parallel do thread_limit(block_size)
-    do i = 0, nparticles - 1
-      arrayx(i) = xj(i)
-      arrayy(i) = yj(i)
-      weights(i) = 1.0_real32 / real(nparticles, real32)
+    !$omp target teams num_teams(num_blocks) thread_limit(block_size)
+    block
+      real(real32) :: weights_local(block_size)
 
-      seed(i) = lcg_next(seed(i))
-      ur = abs(real(seed(i), real32) / real(lcg_m, real32))
-      seed(i) = lcg_next(seed(i))
-      vr = abs(real(seed(i), real32) / real(lcg_m, real32))
-      if (ur <= 0.0_real32) ur = tiny(ur)
-      arrayx(i) = arrayx(i) + 1.0_real32 + 5.0_real32 * (sqrt(-2.0_real32 * log(ur)) * cos(2.0_real32 * pi * vr))
+      !$omp parallel private(team_id, thread_id, block_dim, i, y, ix, iy, rnd_ix, rnd_iy, indx, indy, ur, vr, likelihood_sum, s)
+      team_id = omp_get_team_num()
+      thread_id = omp_get_thread_num()
+      block_dim = omp_get_num_threads()
+      i = team_id * block_dim + thread_id
 
-      seed(i) = lcg_next(seed(i))
-      ur = abs(real(seed(i), real32) / real(lcg_m, real32))
-      seed(i) = lcg_next(seed(i))
-      vr = abs(real(seed(i), real32) / real(lcg_m, real32))
-      if (ur <= 0.0_real32) ur = tiny(ur)
-      arrayy(i) = arrayy(i) - 2.0_real32 + 2.0_real32 * (sqrt(-2.0_real32 * log(ur)) * cos(2.0_real32 * pi * vr))
+      if (i < nparticles) then
+        arrayx(i) = xj(i)
+        arrayy(i) = yj(i)
+        weights(i) = 1.0_real32 / real(nparticles, real32)
 
-      ix = int(arrayx(i), int32)
-      iy = int(arrayy(i), int32)
-      if (arrayx(i) - real(ix, real32) < 0.5_real32) then
-        rnd_ix = ix
-      else
-        rnd_ix = ix
-      end if
-      if (arrayy(i) - real(iy, real32) < 0.5_real32) then
-        rnd_iy = iy
-      else
-        rnd_iy = iy
+        seed(i) = lcg_next(seed(i))
+        ur = abs(real(seed(i), real32) / real(lcg_m, real32))
+        seed(i) = lcg_next(seed(i))
+        vr = abs(real(seed(i), real32) / real(lcg_m, real32))
+        arrayx(i) = arrayx(i) + 1.0_real32 + 5.0_real32 * (sqrt(-2.0_real32 * log(ur)) * cos(2.0_real32 * pi * vr))
+
+        seed(i) = lcg_next(seed(i))
+        ur = abs(real(seed(i), real32) / real(lcg_m, real32))
+        seed(i) = lcg_next(seed(i))
+        vr = abs(real(seed(i), real32) / real(lcg_m, real32))
+        arrayy(i) = arrayy(i) - 2.0_real32 + 2.0_real32 * (sqrt(-2.0_real32 * log(ur)) * cos(2.0_real32 * pi * vr))
       end if
 
-      do y = 0, count_ones - 1
-        indx = rnd_ix + objxy(y * 2 + 1)
-        indy = rnd_iy + objxy(y * 2)
-        ind(i * count_ones + y) = abs(indx * iszy * nfr + indy * nfr + frame)
-        if (ind(i * count_ones + y) >= max_size) ind(i * count_ones + y) = 0_int32
+      !$omp barrier
+
+      if (i < nparticles) then
+        ix = int(arrayx(i), int32)
+        iy = int(arrayy(i), int32)
+        if (arrayx(i) - real(ix, real32) < 0.5_real32) then
+          rnd_ix = ix
+        else
+          rnd_ix = ix
+        end if
+        if (arrayy(i) - real(iy, real32) < 0.5_real32) then
+          rnd_iy = iy
+        else
+          rnd_iy = iy
+        end if
+
+        do y = 0, count_ones - 1
+          indx = rnd_ix + objxy(y * 2 + 1)
+          indy = rnd_iy + objxy(y * 2)
+          ind(i * count_ones + y) = abs(indx * iszy * nfr + indy * nfr + frame)
+          if (ind(i * count_ones + y) >= max_size) ind(i * count_ones + y) = 0_int32
+        end do
+
+        likelihood_sum = 0.0_real32
+        do y = 0, count_ones - 1
+          likelihood_sum = likelihood_sum + &
+            real((byte_as_int(image(ind(i * count_ones + y))) - 100_int32) * &
+                 (byte_as_int(image(ind(i * count_ones + y))) - 100_int32) - &
+                 (byte_as_int(image(ind(i * count_ones + y))) - 228_int32) * &
+                 (byte_as_int(image(ind(i * count_ones + y))) - 228_int32), real32) / 50.0_real32
+        end do
+        likelihood(i) = likelihood_sum / real(count_ones, real32) - scale_factor
+        weights(i) = weights(i) * exp(likelihood(i))
+      end if
+
+      weights_local(thread_id + 1) = 0.0_real32
+      if (i < nparticles) weights_local(thread_id + 1) = weights(i)
+
+      !$omp barrier
+
+      s = block_dim / 2_int32
+      do while (s > 0_int32)
+        if (thread_id < s) weights_local(thread_id + 1) = weights_local(thread_id + 1) + weights_local(thread_id + s + 1)
+        !$omp barrier
+        s = s / 2_int32
       end do
 
-      likelihood_sum = 0.0_real32
-      do y = 0, count_ones - 1
-        likelihood_sum = likelihood_sum + &
-          real((image(ind(i * count_ones + y)) - 100_int32) * (image(ind(i * count_ones + y)) - 100_int32) - &
-               (image(ind(i * count_ones + y)) - 228_int32) * (image(ind(i * count_ones + y)) - 228_int32), real32) / 50.0_real32
-      end do
-      likelihood(i) = likelihood_sum / real(count_ones, real32) - scale_factor
-      weights(i) = weights(i) * exp(likelihood(i))
-    end do
-    !$omp end target teams distribute parallel do
-
-    !$omp target teams distribute parallel do thread_limit(block_size)
-    do block = 0, num_blocks - 1
-      wsum = 0.0_real32
-      do i = block * block_size, min(nparticles - 1_int32, (block + 1_int32) * block_size - 1_int32)
-        wsum = wsum + weights(i)
-      end do
-      partial_sums(block) = wsum
-    end do
-    !$omp end target teams distribute parallel do
+      if (thread_id == 0_int32) partial_sums(team_id) = weights_local(1)
+      !$omp end parallel
+    end block
+    !$omp end target teams
   end subroutine likelihood_kernel
 
   subroutine sum_kernel(partial_sums, nparticles, num_blocks)
@@ -502,29 +543,44 @@ contains
     real(real32), intent(in) :: partial_sums(0:)
     integer(int32), intent(inout) :: seed(0:)
     integer(int32), intent(in) :: nparticles, num_blocks
-    integer(int32) :: i
+    integer(int32) :: i, local_id, x
     real(real32) :: sum_weights, p, q, u1
 
-    !$omp target
-    sum_weights = partial_sums(0)
-    do i = 0, nparticles - 1
-      weights(i) = weights(i) / sum_weights
-    end do
-    cdf(0) = weights(0)
-    do i = 1, nparticles - 1
-      cdf(i) = weights(i) + cdf(i - 1)
-    end do
+    !$omp target teams num_teams(num_blocks) thread_limit(block_size)
+      !$omp parallel private(local_id, i, x, p, q)
+      local_id = omp_get_thread_num()
+      i = omp_get_team_num() * omp_get_num_threads() + local_id
 
-    seed(0) = lcg_next(seed(0))
-    p = abs(real(seed(0), real32) / real(lcg_m, real32))
-    seed(0) = lcg_next(seed(0))
-    q = abs(real(seed(0), real32) / real(lcg_m, real32))
-    if (p <= 0.0_real32) p = tiny(p)
-    u1 = (1.0_real32 / real(nparticles, real32)) * (sqrt(-2.0_real32 * log(p)) * cos(2.0_real32 * pi * q))
-    do i = 0, nparticles - 1
-      u(i) = u1 + real(i, real32) / real(nparticles, real32)
-    end do
-    !$omp end target
+      if (local_id == 0_int32) sum_weights = partial_sums(0)
+
+      !$omp barrier
+
+      if (i < nparticles) weights(i) = weights(i) / sum_weights
+
+      !$omp barrier
+
+      if (i == 0_int32) then
+        cdf(0) = weights(0)
+        do x = 1, nparticles - 1
+          cdf(x) = weights(x) + cdf(x - 1)
+        end do
+
+        seed(0) = lcg_next(seed(0))
+        p = abs(real(seed(0), real32) / real(lcg_m, real32))
+        seed(0) = lcg_next(seed(0))
+        q = abs(real(seed(0), real32) / real(lcg_m, real32))
+        u(0) = (1.0_real32 / real(nparticles, real32)) * (sqrt(-2.0_real32 * log(p)) * cos(2.0_real32 * pi * q))
+      end if
+
+      !$omp barrier
+
+      if (local_id == 0_int32) u1 = u(0)
+
+      !$omp barrier
+
+      if (i < nparticles) u(i) = u1 + real(i, real32) / real(nparticles, real32)
+      !$omp end parallel
+    !$omp end target teams
   end subroutine normalize_kernel
 
   subroutine find_index_kernel(arrayx, arrayy, cdf, u, xj, yj, nparticles)

@@ -11,6 +11,9 @@ module crc64_mod
   integer(int64), parameter :: lcg_c = 11_int64
   integer(int64), parameter :: base24 = 16777216_int64
   real(real64), parameter :: two48 = 281474976710656.0_real64
+  logical, save :: tables_ready = .false.
+  integer(int64), save :: crc64_table(0:3, 0:255)
+  integer(int64), save :: crc64_interleaved_table(0:3, 0:255)
 
 contains
 
@@ -35,25 +38,172 @@ contains
     value = real(state, real64) / two48
   end subroutine next_drand48
 
-  pure integer(int64) function crc64_serial(buffer, first, last) result(cs_out)
-    integer(int32), intent(in) :: buffer(:)
-    integer(int64), intent(in) :: first, last
-    integer(int64) :: cs, idx, pos
-    integer :: bit
+  subroutine init_crc64_tables()
+    integer :: row, idx
+    integer(int64) :: entry
 
-    cs = all_ones
-    do pos = first, last
-      cs = ieor(cs, int(iand(buffer(pos), 255_int32), int64))
-      do bit = 1, 8
-        if (iand(cs, 1_int64) /= 0_int64) then
-          cs = ieor(shiftr(cs, 1), crc64_poly)
+    if (tables_ready) return
+
+    do idx = 0, 255
+      entry = int(idx, int64)
+      do row = 1, 8
+        if (iand(entry, 1_int64) /= 0_int64) then
+          entry = ieor(shiftr(entry, 1), crc64_poly)
         else
-          cs = shiftr(cs, 1)
+          entry = shiftr(entry, 1)
         end if
       end do
+      crc64_table(3, idx) = entry
     end do
-    cs_out = ieor(cs, all_ones)
-  end function crc64_serial
+
+    do row = 2, 0, -1
+      do idx = 0, 255
+        entry = crc64_table(row + 1, idx)
+        crc64_table(row, idx) = ieor(crc64_table(3, int(iand(entry, 255_int64))), shiftr(entry, 8))
+      end do
+    end do
+
+    crc64_interleaved_table = crc64_table
+    do row = 1, 16
+      do idx = 0, 255
+        entry = crc64_interleaved_table(3, idx)
+        crc64_interleaved_table(3, idx) = ieor(crc64_table(3, int(iand(entry, 255_int64))), shiftr(entry, 8))
+      end do
+    end do
+    do row = 2, 0, -1
+      do idx = 0, 255
+        entry = crc64_interleaved_table(row + 1, idx)
+        crc64_interleaved_table(row, idx) = ieor(crc64_table(3, int(iand(entry, 255_int64))), shiftr(entry, 8))
+      end do
+    end do
+
+    tables_ready = .true.
+  end subroutine init_crc64_tables
+
+  pure integer(int32) function crc64_load_le32(buffer, pos) result(w)
+    integer(int32), intent(in) :: buffer(:)
+    integer(int64), intent(in) :: pos
+
+    w = ior(ior(iand(buffer(pos), 255_int32), shiftl(iand(buffer(pos + 1_int64), 255_int32), 8)), &
+            ior(shiftl(iand(buffer(pos + 2_int64), 255_int32), 16), &
+                shiftl(iand(buffer(pos + 3_int64), 255_int32), 24)))
+  end function crc64_load_le32
+
+  pure integer(int64) function crc64(buffer, first, nbytes, table, interleaved_table) result(cs_out)
+    integer(int32), intent(in) :: buffer(:)
+    integer(int64), intent(in) :: first, nbytes
+    integer(int64), intent(in) :: table(0:3, 0:255), interleaved_table(0:3, 0:255)
+    integer(int64) :: cs(0:4), cry, data_pos, end_pos, idx
+    integer(int32) :: in_word(0:4)
+    integer :: b, i
+
+    cs = 0_int64
+    cs(0) = all_ones
+    data_pos = first
+    end_pos = first + nbytes
+
+    do while (data_pos < end_pos .and. (mod(data_pos - 1_int64, 4_int64) /= 0_int64 .or. end_pos - data_pos < 20_int64))
+      idx = iand(ieor(cs(0), int(iand(buffer(data_pos), 255_int32), int64)), 255_int64)
+      cs(0) = ieor(table(3, int(idx)), shiftr(cs(0), 8))
+      data_pos = data_pos + 1_int64
+    end do
+
+    if (data_pos == end_pos) then
+      cs_out = ieor(cs(0), all_ones)
+      return
+    end if
+
+    do i = 0, 4
+      in_word(i) = crc64_load_le32(buffer, data_pos + int(4 * i, int64))
+    end do
+    data_pos = data_pos + 20_int64
+    cry = 0_int64
+
+    do while (end_pos - data_pos >= 20_int64)
+      cs(0) = ieor(cs(0), cry)
+
+      in_word(0) = ieor(in_word(0), int(iand(cs(0), int(z'00000000ffffffff', int64)), int32))
+      cs(1) = ieor(cs(1), shiftr(cs(0), 32))
+      cs(0) = interleaved_table(0, iand(in_word(0), 255_int32))
+      in_word(0) = shiftr(in_word(0), 8)
+
+      in_word(1) = ieor(in_word(1), int(iand(cs(1), int(z'00000000ffffffff', int64)), int32))
+      cs(2) = ieor(cs(2), shiftr(cs(1), 32))
+      cs(1) = interleaved_table(0, iand(in_word(1), 255_int32))
+      in_word(1) = shiftr(in_word(1), 8)
+
+      in_word(2) = ieor(in_word(2), int(iand(cs(2), int(z'00000000ffffffff', int64)), int32))
+      cs(3) = ieor(cs(3), shiftr(cs(2), 32))
+      cs(2) = interleaved_table(0, iand(in_word(2), 255_int32))
+      in_word(2) = shiftr(in_word(2), 8)
+
+      in_word(3) = ieor(in_word(3), int(iand(cs(3), int(z'00000000ffffffff', int64)), int32))
+      cs(4) = ieor(cs(4), shiftr(cs(3), 32))
+      cs(3) = interleaved_table(0, iand(in_word(3), 255_int32))
+      in_word(3) = shiftr(in_word(3), 8)
+
+      in_word(4) = ieor(in_word(4), int(iand(cs(4), int(z'00000000ffffffff', int64)), int32))
+      cry = shiftr(cs(4), 32)
+      cs(4) = interleaved_table(0, iand(in_word(4), 255_int32))
+      in_word(4) = shiftr(in_word(4), 8)
+
+      do b = 1, 2
+        cs(0) = ieor(cs(0), interleaved_table(b, iand(in_word(0), 255_int32)))
+        in_word(0) = shiftr(in_word(0), 8)
+
+        cs(1) = ieor(cs(1), interleaved_table(b, iand(in_word(1), 255_int32)))
+        in_word(1) = shiftr(in_word(1), 8)
+
+        cs(2) = ieor(cs(2), interleaved_table(b, iand(in_word(2), 255_int32)))
+        in_word(2) = shiftr(in_word(2), 8)
+
+        cs(3) = ieor(cs(3), interleaved_table(b, iand(in_word(3), 255_int32)))
+        in_word(3) = shiftr(in_word(3), 8)
+
+        cs(4) = ieor(cs(4), interleaved_table(b, iand(in_word(4), 255_int32)))
+        in_word(4) = shiftr(in_word(4), 8)
+      end do
+
+      cs(0) = ieor(cs(0), interleaved_table(3, iand(in_word(0), 255_int32)))
+      in_word(0) = crc64_load_le32(buffer, data_pos)
+
+      cs(1) = ieor(cs(1), interleaved_table(3, iand(in_word(1), 255_int32)))
+      in_word(1) = crc64_load_le32(buffer, data_pos + 4_int64)
+
+      cs(2) = ieor(cs(2), interleaved_table(3, iand(in_word(2), 255_int32)))
+      in_word(2) = crc64_load_le32(buffer, data_pos + 8_int64)
+
+      cs(3) = ieor(cs(3), interleaved_table(3, iand(in_word(3), 255_int32)))
+      in_word(3) = crc64_load_le32(buffer, data_pos + 12_int64)
+
+      cs(4) = ieor(cs(4), interleaved_table(3, iand(in_word(4), 255_int32)))
+      in_word(4) = crc64_load_le32(buffer, data_pos + 16_int64)
+      data_pos = data_pos + 20_int64
+    end do
+
+    cs(0) = ieor(cs(0), cry)
+
+    do i = 0, 4
+      if (i > 0) cs(0) = ieor(cs(0), cs(i))
+      in_word(i) = ieor(in_word(i), int(iand(cs(0), int(z'00000000ffffffff', int64)), int32))
+      cs(0) = shiftr(cs(0), 32)
+
+      do b = 0, 2
+        cs(0) = ieor(cs(0), table(b, iand(in_word(i), 255_int32)))
+        in_word(i) = shiftr(in_word(i), 8)
+      end do
+
+      cs(0) = ieor(cs(0), table(3, iand(in_word(i), 255_int32)))
+    end do
+
+    do while (data_pos < end_pos)
+      idx = iand(ieor(cs(0), int(iand(buffer(data_pos), 255_int32), int64)), 255_int64)
+      cs(0) = ieor(table(3, int(idx)), shiftr(cs(0), 8))
+      data_pos = data_pos + 1_int64
+    end do
+
+    cs_out = ieor(cs(0), all_ones)
+  end function crc64
 
   pure integer(int64) function crc64_multiply(a_in, b_in) result(r)
     integer(int64), intent(in) :: a_in, b_in
@@ -122,14 +272,16 @@ contains
     integer(int32), intent(in) :: buffer(:)
     integer(int64), intent(in) :: nbytes
     integer(int64), allocatable :: chunk_cs(:), chunk_sz(:)
-    integer(int64) :: bpt, first, last, local_cs
-    integer :: tid, nthreads, bit
-    integer(int64) :: pos
+    integer(int64) :: bpt, first, last
+    integer :: tid, nthreads
 
     if (nbytes <= 2048_int64) then
-      cs = crc64_serial(buffer, 1_int64, nbytes)
+      call init_crc64_tables()
+      cs = crc64(buffer, 1_int64, nbytes, crc64_table, crc64_interleaved_table)
       return
     end if
+
+    call init_crc64_tables()
 
     nthreads = 96 * 8 * 32
     if (nbytes < int(nthreads, int64) * 1024_int64) then
@@ -140,8 +292,8 @@ contains
     bpt = nbytes / int(nthreads, int64)
 
     !$omp target teams distribute parallel do num_teams(max(1, nthreads / 64)) thread_limit(64) &
-    !$omp& map(to: buffer(1:nbytes)) map(from: chunk_cs(1:nthreads), chunk_sz(1:nthreads)) &
-    !$omp& private(first, last, local_cs, pos, bit)
+    !$omp& map(to: buffer(1:nbytes), crc64_table, crc64_interleaved_table) &
+    !$omp& map(from: chunk_cs(1:nthreads), chunk_sz(1:nthreads)) private(first, last)
     do tid = 1, nthreads
       first = int(tid - 1, int64) * bpt + 1_int64
       if (tid /= nthreads) then
@@ -150,19 +302,8 @@ contains
         last = nbytes
       end if
 
-      local_cs = all_ones
-      do pos = first, last
-        local_cs = ieor(local_cs, int(iand(buffer(pos), 255_int32), int64))
-        do bit = 1, 8
-          if (iand(local_cs, 1_int64) /= 0_int64) then
-            local_cs = ieor(shiftr(local_cs, 1), crc64_poly)
-          else
-            local_cs = shiftr(local_cs, 1)
-          end if
-        end do
-      end do
-      chunk_cs(tid) = ieor(local_cs, all_ones)
       chunk_sz(tid) = last - first + 1_int64
+      chunk_cs(tid) = crc64(buffer, first, chunk_sz(tid), crc64_table, crc64_interleaved_table)
     end do
     !$omp end target teams distribute parallel do
 
@@ -178,9 +319,25 @@ end module crc64_mod
 
 program main
   use iso_fortran_env, only: int32, int64, real64
-  use omp_lib, only: omp_get_wtime
+  use iso_c_binding, only: c_int, c_long
   use crc64_mod
   implicit none
+
+  type, bind(C) :: timespec
+    integer(c_long) :: tv_sec
+    integer(c_long) :: tv_nsec
+  end type timespec
+
+  interface
+    function clock_gettime(clk_id, tp) bind(C, name="clock_gettime") result(rc)
+      import :: c_int, timespec
+      integer(c_int), value :: clk_id
+      type(timespec), intent(out) :: tp
+      integer(c_int) :: rc
+    end function clock_gettime
+  end interface
+
+  integer(c_int), parameter :: CLOCK_THREAD_CPUTIME_ID = 3_c_int
 
   integer :: argc, ntests, seed, max_test_length, ntest
   integer(int64) :: rng_state, test_length, div_pt, tlend
@@ -191,6 +348,8 @@ program main
   character(len=64) :: arg
   character(len=4) :: check1, check2
   integer(int64) :: i
+  type(timespec) :: b_start, b_end
+  integer(c_int) :: clock_status
 
   ntests = 10
   seed = 5
@@ -227,9 +386,11 @@ program main
       buffer(i) = int(255.0_real64 * rnd, int32)
     end do
 
-    start_time = omp_get_wtime()
+    clock_status = clock_gettime(CLOCK_THREAD_CPUTIME_ID, b_start)
     cs = crc64_omp(buffer, test_length)
-    end_time = omp_get_wtime()
+    clock_status = clock_gettime(CLOCK_THREAD_CPUTIME_ID, b_end)
+    start_time = real(b_start%tv_sec, real64) + 1.0e-9_real64 * real(b_start%tv_nsec, real64)
+    end_time = real(b_end%tv_sec, real64) + 1.0e-9_real64 * real(b_end%tv_nsec, real64)
     b_time = end_time - start_time
 
     if (ntest > 1) then
@@ -241,7 +402,7 @@ program main
     call crc64_invert(cs, check_bytes)
     buffer(test_length + 1:test_length + tlend) = check_bytes
 
-    csc = crc64_serial(buffer, 1_int64, test_length + tlend)
+    csc = crc64(buffer, 1_int64, test_length + tlend, crc64_table, crc64_interleaved_table)
     if (csc == all_ones) then
       check1 = "pass"
     else
@@ -251,11 +412,11 @@ program main
     call next_drand48(rng_state, rnd)
     div_pt = int(real(test_length, real64) * rnd, int64)
     if (div_pt > 0_int64) then
-      cs1 = crc64_serial(buffer, 1_int64, div_pt)
+      cs1 = crc64(buffer, 1_int64, div_pt, crc64_table, crc64_interleaved_table)
     else
-      cs1 = crc64_serial(buffer, 1_int64, 0_int64)
+      cs1 = crc64(buffer, 1_int64, 0_int64, crc64_table, crc64_interleaved_table)
     end if
-    cs2 = crc64_serial(buffer, div_pt + 1_int64, test_length)
+    cs2 = crc64(buffer, div_pt + 1_int64, test_length - div_pt, crc64_table, crc64_interleaved_table)
     csc = crc64_combine(cs1, cs2, test_length - div_pt)
     if (csc == cs) then
       check2 = "pass"
@@ -268,7 +429,7 @@ program main
   end do
 
   if (tot_time > 0.0_real64) then
-    write(*,'(G0,1X,"MB/s")') (tot_bytes / (1024.0_real64 * 1024.0_real64)) / tot_time
+    write(*,'(G0.6,1X,"MB/s")') (tot_bytes / (1024.0_real64 * 1024.0_real64)) / tot_time
   else
     write(*,'("inf MB/s")')
   end if

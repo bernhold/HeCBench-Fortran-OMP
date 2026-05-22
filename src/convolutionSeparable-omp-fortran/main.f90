@@ -1,7 +1,7 @@
 program main
   use, intrinsic :: iso_c_binding, only: c_int
   use, intrinsic :: iso_fortran_env, only: int32, int64, real32, real64
-  use omp_lib, only: omp_get_wtime
+  use omp_lib, only: omp_get_wtime, omp_get_team_num, omp_get_thread_num
   implicit none
 
   interface
@@ -18,12 +18,21 @@ program main
 
   integer, parameter :: kernel_radius = 8
   integer, parameter :: kernel_length = 2 * kernel_radius + 1
+  integer, parameter :: rows_blockdim_x = 16
+  integer, parameter :: rows_blockdim_y = 4
+  integer, parameter :: rows_result_steps = 8
+  integer, parameter :: rows_halo_steps = 1
+  integer, parameter :: columns_blockdim_x = 16
+  integer, parameter :: columns_blockdim_y = 8
+  integer, parameter :: columns_result_steps = 8
+  integer, parameter :: columns_halo_steps = 1
 
   integer :: argc, image_w, image_h, repeat
   integer(int64) :: n
   character(len=256) :: arg0
   real(real32), allocatable :: kernel(:), input(:), buffer(:), output_cpu(:), output_gpu(:)
   real(real64) :: sum_ref, delta, l2norm
+  character(len=16) :: l2_text
   integer :: i
 
   call get_command_argument(0, arg0)
@@ -38,6 +47,13 @@ program main
   repeat = read_arg(3)
   if (image_w <= 0 .or. image_h <= 0 .or. repeat <= 0) then
     write(*,'("Usage: ",A," <image width> <image height> <repeat>")') trim(arg0)
+    stop 1
+  end if
+  if (mod(image_w, rows_result_steps * rows_blockdim_x) /= 0 .or. &
+      mod(image_h, rows_blockdim_y) /= 0 .or. &
+      mod(image_w, columns_blockdim_x) /= 0 .or. &
+      mod(image_h, columns_result_steps * columns_blockdim_y) /= 0) then
+    write(*,'("Image dimensions do not satisfy tiled convolution block geometry")')
     stop 1
   end if
 
@@ -73,7 +89,11 @@ program main
   else
     l2norm = sqrt(delta)
   end if
-  write(*,'("Relative L2 norm: ",ES10.3)') l2norm
+  write(l2_text,'(ES9.3)') l2norm
+  do i = 1, len(l2_text)
+    if (l2_text(i:i) == 'E') l2_text(i:i) = 'e'
+  end do
+  write(*,'("Relative L2 norm: ",A)') trim(adjustl(l2_text))
   write(*,'()')
 
   if (l2norm < 1.0e-6_real64) then
@@ -124,55 +144,135 @@ contains
     end do
     end_time = omp_get_wtime()
 
-    write(*,'("Average kernel execution time ",F0.6," (s)")') (end_time - start_time) / real(repeat, real64)
+    write(*,'("Average kernel execution time ",F8.6," (s)")') (end_time - start_time) / real(repeat, real64)
   end subroutine run_timed_convolution
 
   subroutine convolution_rows_device(dst, src, kernel, image_w, image_h)
     real(real32), intent(inout) :: dst(:)
     real(real32), intent(in) :: src(:), kernel(:)
     integer, intent(in) :: image_w, image_h
-    integer :: x, y, k, d, idx
-    real(real32) :: accum
+    integer :: team_x, team_y, num_teams
+    real(real32), allocatable :: l_data(:, :, :)
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(k, d, idx, accum)
-    do y = 0, image_h - 1
-      do x = 0, image_w - 1
-        accum = 0.0_real32
-        do k = -kernel_radius, kernel_radius
-          d = x + k
-          if (d >= 0 .and. d < image_w) then
-            accum = accum + src(y * image_w + d + 1) * kernel(kernel_radius - k + 1)
+    team_x = (image_w / rows_result_steps) / rows_blockdim_x
+    team_y = image_h / rows_blockdim_y
+    num_teams = team_x * team_y
+    allocate(l_data(num_teams, rows_blockdim_y, (rows_result_steps + 2 * rows_halo_steps) * rows_blockdim_x))
+
+    !$omp target teams num_teams(num_teams) thread_limit(rows_blockdim_y * rows_blockdim_x) map(alloc: l_data)
+      !$omp parallel
+      block
+      integer :: gid_x, gid_y, lid_x, lid_y, base_x, base_y, i, j
+      real(real32) :: accum
+
+        gid_x = mod(omp_get_team_num(), team_x)
+        gid_y = omp_get_team_num() / team_x
+        lid_x = mod(omp_get_thread_num(), rows_blockdim_x)
+        lid_y = omp_get_thread_num() / rows_blockdim_x
+        base_x = (gid_x * rows_result_steps - rows_halo_steps) * rows_blockdim_x + lid_x
+        base_y = gid_y * rows_blockdim_y + lid_y
+
+        do i = rows_halo_steps, rows_halo_steps + rows_result_steps - 1
+          l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + 1) = &
+              src(base_y * image_w + base_x + i * rows_blockdim_x + 1)
+        end do
+
+        do i = 0, rows_halo_steps - 1
+          if (base_x + i * rows_blockdim_x >= 0) then
+            l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + 1) = &
+                src(base_y * image_w + base_x + i * rows_blockdim_x + 1)
+          else
+            l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + 1) = 0.0_real32
           end if
         end do
-        idx = y * image_w + x + 1
-        dst(idx) = accum
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+
+        do i = rows_halo_steps + rows_result_steps, rows_halo_steps + rows_result_steps + rows_halo_steps - 1
+          if (base_x + i * rows_blockdim_x < image_w) then
+            l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + 1) = &
+                src(base_y * image_w + base_x + i * rows_blockdim_x + 1)
+          else
+            l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + 1) = 0.0_real32
+          end if
+        end do
+
+        !$omp barrier
+
+        do i = rows_halo_steps, rows_halo_steps + rows_result_steps - 1
+          accum = 0.0_real32
+          do j = -kernel_radius, kernel_radius
+            accum = accum + kernel(kernel_radius - j + 1) * &
+                l_data(omp_get_team_num() + 1, lid_y + 1, lid_x + i * rows_blockdim_x + j + 1)
+          end do
+          dst(base_y * image_w + base_x + i * rows_blockdim_x + 1) = accum
+        end do
+      end block
+      !$omp end parallel
+    !$omp end target teams
+    deallocate(l_data)
   end subroutine convolution_rows_device
 
   subroutine convolution_columns_device(dst, src, kernel, image_w, image_h)
     real(real32), intent(inout) :: dst(:)
     real(real32), intent(in) :: src(:), kernel(:)
     integer, intent(in) :: image_w, image_h
-    integer :: x, y, k, d, idx
-    real(real32) :: accum
+    integer :: team_x, team_y, num_teams
+    real(real32), allocatable :: l_data(:, :, :)
 
-    !$omp target teams distribute parallel do collapse(2) thread_limit(256) private(k, d, idx, accum)
-    do y = 0, image_h - 1
-      do x = 0, image_w - 1
-        accum = 0.0_real32
-        do k = -kernel_radius, kernel_radius
-          d = y + k
-          if (d >= 0 .and. d < image_h) then
-            accum = accum + src(d * image_w + x + 1) * kernel(kernel_radius - k + 1)
+    team_x = image_w / columns_blockdim_x
+    team_y = image_h / columns_result_steps / columns_blockdim_y
+    num_teams = team_x * team_y
+    allocate(l_data(num_teams, columns_blockdim_x, (columns_result_steps + 2 * columns_halo_steps) * columns_blockdim_y + 1))
+
+    !$omp target teams num_teams(num_teams) thread_limit(columns_blockdim_y * columns_blockdim_x) map(alloc: l_data)
+      !$omp parallel
+      block
+      integer :: gid_x, gid_y, lid_x, lid_y, base_x, base_y, i, j
+      real(real32) :: accum
+
+        gid_x = mod(omp_get_team_num(), team_x)
+        gid_y = omp_get_team_num() / team_x
+        lid_x = mod(omp_get_thread_num(), columns_blockdim_x)
+        lid_y = omp_get_thread_num() / columns_blockdim_x
+        base_x = gid_x * columns_blockdim_x + lid_x
+        base_y = (gid_y * columns_result_steps - columns_halo_steps) * columns_blockdim_y + lid_y
+
+        do i = columns_halo_steps, columns_halo_steps + columns_result_steps - 1
+          l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + 1) = &
+              src((base_y + i * columns_blockdim_y) * image_w + base_x + 1)
+        end do
+
+        do i = 0, columns_halo_steps - 1
+          if (base_y + i * columns_blockdim_y >= 0) then
+            l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + 1) = &
+                src((base_y + i * columns_blockdim_y) * image_w + base_x + 1)
+          else
+            l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + 1) = 0.0_real32
           end if
         end do
-        idx = y * image_w + x + 1
-        dst(idx) = accum
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+
+        do i = columns_halo_steps + columns_result_steps, columns_halo_steps + columns_result_steps + columns_halo_steps - 1
+          if (base_y + i * columns_blockdim_y < image_h) then
+            l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + 1) = &
+                src((base_y + i * columns_blockdim_y) * image_w + base_x + 1)
+          else
+            l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + 1) = 0.0_real32
+          end if
+        end do
+
+        !$omp barrier
+
+        do i = columns_halo_steps, columns_halo_steps + columns_result_steps - 1
+          accum = 0.0_real32
+          do j = -kernel_radius, kernel_radius
+            accum = accum + kernel(kernel_radius - j + 1) * &
+                l_data(omp_get_team_num() + 1, lid_x + 1, lid_y + i * columns_blockdim_y + j + 1)
+          end do
+          dst((base_y + i * columns_blockdim_y) * image_w + base_x + 1) = accum
+        end do
+      end block
+      !$omp end parallel
+    !$omp end target teams
+    deallocate(l_data)
   end subroutine convolution_columns_device
 
   subroutine convolution_row_host(dst, src, kernel, image_w, image_h)

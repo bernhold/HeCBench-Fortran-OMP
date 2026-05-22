@@ -41,20 +41,12 @@ program main
 
   !$omp target data map(to: a(1:a_size), z(1:z_size)) map(from: r(1:z_size))
   call bs1(a, z, r, z_size, n, repeat)
-  !$omp target update from(r(1:z_size))
-  call verify(a, z, r, a_size, z_size, 'bs1')
 
   call bs2(a, z, r, z_size, n, repeat)
-  !$omp target update from(r(1:z_size))
-  call verify(a, z, r, a_size, z_size, 'bs2')
 
   call bs3(a, z, r, z_size, n, repeat)
-  !$omp target update from(r(1:z_size))
-  call verify(a, z, r, a_size, z_size, 'bs3')
 
   call bs4(a, z, r, z_size, n, repeat)
-  !$omp target update from(r(1:z_size))
-  call verify(a, z, r, a_size, z_size, 'bs4')
   !$omp end target data
 
   deallocate(a, z, r)
@@ -185,34 +177,41 @@ contains
     real(real32), intent(in) :: a(:), z(:)
     integer, intent(out) :: r(:)
     integer, intent(in) :: z_size, n, repeat
-    integer :: rep, idx, nbits, k, search_idx, candidate, bounded
+    integer :: rep, nbits, k, lid, gid, p, search_idx, candidate, bounded
     real(real32) :: value
     real(real64) :: start_time, end_time
     start_time = omp_get_wtime()
     do rep = 1, repeat
-      !$omp target teams distribute parallel do thread_limit(256) private(nbits, k, search_idx, candidate, bounded, value)
-      do idx = 1, z_size
+      !$omp target teams num_teams(z_size / 256) thread_limit(256) private(k)
+      !$omp parallel private(nbits, lid, gid, p, search_idx, candidate, bounded, value)
+      lid = omp_get_thread_num()
+      gid = omp_get_team_num() * omp_get_num_threads() + lid
+      if (lid == 0) then
         nbits = 0
         do while (ishft(n, -nbits) /= 0)
           nbits = nbits + 1
         end do
         k = ishft(1, nbits - 1)
-        value = z(idx)
-        if (a(k + 1) <= value) then
-          search_idx = k
-        else
-          search_idx = 0
-        end if
-        k = ishft(k, -1)
-        do while (k /= 0)
-          candidate = ior(search_idx, k)
-          bounded = min(candidate, n)
-          if (value >= a(bounded + 1)) search_idx = candidate
-          k = ishft(k, -1)
-        end do
-        r(idx) = search_idx
+      end if
+      !$omp barrier
+
+      p = k
+      value = z(gid + 1)
+      if (a(p + 1) <= value) then
+        search_idx = p
+      else
+        search_idx = 0
+      end if
+      p = ishft(p, -1)
+      do while (p /= 0)
+        candidate = ior(search_idx, p)
+        bounded = min(candidate, n)
+        if (value >= a(bounded + 1)) search_idx = candidate
+        p = ishft(p, -1)
       end do
-      !$omp end target teams distribute parallel do
+      r(gid + 1) = search_idx
+      !$omp end parallel
+      !$omp end target teams
     end do
     end_time = omp_get_wtime()
     call print_time('bs4', start_time, end_time, repeat)

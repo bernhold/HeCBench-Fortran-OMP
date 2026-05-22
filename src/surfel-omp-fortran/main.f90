@@ -1,5 +1,5 @@
 module surfel_mod
-  use iso_c_binding, only: c_int
+  use iso_c_binding, only: c_float, c_int
   use iso_fortran_env, only: real32, real64
   use omp_lib
   implicit none
@@ -9,45 +9,20 @@ module surfel_mod
   integer, parameter :: col_rsq = 6, col_dim = 7
 
   interface
-    subroutine c_srand(seed) bind(C, name="srand")
-      import :: c_int
-      integer(c_int), value :: seed
-    end subroutine c_srand
-
-    function c_rand() bind(C, name="rand") result(value)
-      import :: c_int
-      integer(c_int) :: value
-    end function c_rand
+    subroutine c_fill_src(src, n) bind(C, name="surfel_fill_src")
+      import :: c_float, c_int
+      real(c_float), intent(out) :: src(*)
+      integer(c_int), value :: n
+    end subroutine c_fill_src
   end interface
 
 contains
 
-  real(real32) function uniform(lo, hi) result(value)
-    real(real32), intent(in) :: lo, hi
-
-    value = lo + (hi - lo) * real(c_rand(), real32) / real(huge(1_c_int), real32)
-  end function uniform
-
   subroutine fill_src(src, n)
     real(real32), intent(out) :: src(0:)
     integer, intent(in) :: n
-    integer :: i
-    real(real32) :: nx, ny, nz, len
 
-    call c_srand(19937_c_int)
-    do i = 0, n - 1
-      src(i * col_dim + col_p_x) = uniform(-5.0_real32, 5.0_real32)
-      src(i * col_dim + col_p_y) = uniform(-5.0_real32, 5.0_real32)
-      src(i * col_dim + col_p_z) = uniform(0.3_real32, 5.0_real32)
-      nx = uniform(-1.0_real32, 1.0_real32)
-      ny = uniform(-1.0_real32, 1.0_real32)
-      nz = uniform(-1.0_real32, 1.0_real32)
-      len = sqrt(nx * nx + ny * ny + nz * nz)
-      src(i * col_dim + col_n_x) = nx / len
-      src(i * col_dim + col_n_y) = ny / len
-      src(i * col_dim + col_n_z) = nz / len
-      src(i * col_dim + col_rsq) = uniform(4.0e-4_real32, 2.5e-3_real32)
-    end do
+    call c_fill_src(src, int(n, c_int))
   end subroutine fill_src
 
   subroutine surfel_render(src, n, f, w, h, dst)
@@ -191,7 +166,7 @@ program main
       call surfel_render(src, n, inverse_focal_length(f_idx), w, h, h_dst)
     end do
     elapsed_ns = (omp_get_wtime() - start_time) * 1.0e9_real64
-    write(*,'(A,F0.6,A)') 'Average kernel execution time: ', elapsed_ns * 1.0e-6_real64 / real(repeat, real64), ' (ms)'
+    write(*,'(A,F8.6,A)') 'Average kernel execution time: ', elapsed_ns * 1.0e-6_real64 / real(repeat, real64), ' (ms)'
     !$omp target update from(h_dst(0:dst_size - 1))
     do i = 0, dst_size - 1
       if (abs(h_dst(i) - r_dst(i)) > 1.0e-3_real32) then

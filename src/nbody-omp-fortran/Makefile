@@ -1,4 +1,5 @@
 FC        = amdflang
+CXX       = amdclang++
 OPTIMIZE  ?= yes
 DEBUG     ?= no
 DEVICE    ?= gpu
@@ -6,17 +7,21 @@ ARCH      ?= gfx90a
 LAUNCHER  ?=
 
 program = main
-source  = main.f90
-obj     = $(source:.f90=.o)
+fsource = main.f90
+cxxsource = nbody_init.cpp
+obj     = $(fsource:.f90=.o) $(cxxsource:.cpp=.o)
 
 FFLAGS := $(EXTRA_FFLAGS) -Wall
+CXXFLAGS := $(EXTRA_CXXFLAGS) -Wall
 
 ifeq ($(DEBUG),yes)
   FFLAGS += -g -DDEBUG
+  CXXFLAGS += -g -DDEBUG
 endif
 
 ifeq ($(OPTIMIZE),yes)
   FFLAGS += -O3
+  CXXFLAGS += -O3
 endif
 
 ifeq ($(DEVICE),gpu)
@@ -29,10 +34,13 @@ LDFLAGS =
 BENCHMARK_ARGS ?= 16000 10
 
 $(program): $(obj)
-	$(FC) $(FFLAGS) $(obj) -o $@ $(LDFLAGS)
+	$(FC) $(FFLAGS) $(obj) -o $@ $(LDFLAGS) -lstdc++
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj) *.mod

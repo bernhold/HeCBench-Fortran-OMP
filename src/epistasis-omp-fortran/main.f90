@@ -188,8 +188,8 @@ contains
       num_snp_m = num_snp_m + 1
     end do
 
-    start_time = omp_get_wtime()
     !$omp target data map(to: data_zeros(1:num_snp*pp_zeros*2), data_ones(1:num_snp*pp_ones*2)) map(tofrom: scores(1:num_snp*num_snp))
+      start_time = omp_get_wtime()
       do iter = 1, iteration
         !$omp target teams distribute parallel do collapse(2) thread_limit(block_snp) private(i, j, p, k, tid, ft, score, &
         !$omp& t00, t01, t02, t10, t11, t12, t20, t21, t22, di2, dj2, active_mask, base_i, base_j, step, n0, n1, n2, g0, g1, g2)
@@ -324,8 +324,8 @@ contains
         end do
         !$omp end target teams distribute parallel do
       end do
+      end_time = omp_get_wtime()
     !$omp end target data
-    end_time = omp_get_wtime()
     compute_scores_device = end_time - start_time
   end function compute_scores_device
 

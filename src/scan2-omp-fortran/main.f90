@@ -158,57 +158,117 @@ contains
     integer, intent(in) :: block_size, len
     real(real32), intent(in) :: input(0:)
     real(real32), intent(inout) :: output(0:), sum_buffer(0:)
-    integer :: bid, j, base, teams
-    real(real32) :: running
+    integer :: teams
+    integer :: tid, bid, gid, stride
+    real(real32) :: block(0:255), cache0, cache1
 
     teams = len / block_size
-    !$omp target teams distribute parallel do thread_limit(1) private(base, j, running)
-    do bid = 0, teams - 1
-      base = bid * block_size
-      running = 0.0_real32
-      do j = 0, block_size - 1
-        output(base + j) = running
-        running = running + input(base + j)
-      end do
-      sum_buffer(bid) = running
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp target teams num_teams(teams) thread_limit(block_size / 2) private(block)
+      !$omp parallel private(tid, bid, gid, stride, cache0, cache1)
+        tid = omp_get_thread_num()
+        bid = omp_get_team_num()
+        gid = bid * block_size / 2 + tid
+
+        block(2 * tid) = input(2 * gid)
+        block(2 * tid + 1) = input(2 * gid + 1)
+        !$omp barrier
+
+        cache0 = block(0)
+        cache1 = cache0 + block(1)
+
+        stride = 1
+        do while (stride < block_size)
+          if (2 * tid >= stride) then
+            cache0 = block(2 * tid - stride) + block(2 * tid)
+            cache1 = block(2 * tid + 1 - stride) + block(2 * tid + 1)
+          end if
+          !$omp barrier
+
+          block(2 * tid) = cache0
+          block(2 * tid + 1) = cache1
+          !$omp barrier
+
+          stride = stride * 2
+        end do
+
+        sum_buffer(bid) = block(block_size - 1)
+
+        if (tid == 0) then
+          output(2 * gid) = 0.0_real32
+          output(2 * gid + 1) = block(2 * tid)
+        else
+          output(2 * gid) = block(2 * tid - 1)
+          output(2 * gid + 1) = block(2 * tid)
+        end if
+      !$omp end parallel
+    !$omp end target teams
   end subroutine b_scan
 
   subroutine p_scan(block_size, len, input, output)
     integer, intent(in) :: block_size, len
     real(real32), intent(in) :: input(0:)
     real(real32), intent(inout) :: output(0:)
-    integer :: j, dummy
-    real(real32) :: running
-    integer :: unused_block_size
+    integer :: tid, bid, gid, stride
+    real(real32) :: block(0:3), cache0, cache1
 
-    unused_block_size = block_size
-    !$omp target teams distribute parallel do thread_limit(1) private(j, running)
-    do dummy = 0, 0
-      running = 0.0_real32
-      do j = 0, len - 1
-        output(j) = running
-        running = running + input(j)
-      end do
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp target teams num_teams(1) thread_limit(len / 2) private(block)
+      !$omp parallel private(tid, bid, gid, stride, cache0, cache1)
+        tid = omp_get_thread_num()
+        bid = omp_get_team_num()
+        gid = bid * len / 2 + tid
+
+        block(2 * tid) = input(2 * gid)
+        block(2 * tid + 1) = input(2 * gid + 1)
+        !$omp barrier
+
+        cache0 = block(0)
+        cache1 = cache0 + block(1)
+
+        stride = 1
+        do while (stride < block_size)
+          if (2 * tid >= stride) then
+            cache0 = block(2 * tid - stride) + block(2 * tid)
+            cache1 = block(2 * tid + 1 - stride) + block(2 * tid + 1)
+          end if
+          !$omp barrier
+
+          block(2 * tid) = cache0
+          block(2 * tid + 1) = cache1
+          !$omp barrier
+
+          stride = stride * 2
+        end do
+
+        if (tid == 0) then
+          output(2 * gid) = 0.0_real32
+          output(2 * gid + 1) = block(2 * tid)
+        else
+          output(2 * gid) = block(2 * tid - 1)
+          output(2 * gid + 1) = block(2 * tid)
+        end if
+      !$omp end parallel
+    !$omp end target teams
   end subroutine p_scan
 
   subroutine b_addition(block_size, len, input, output)
     integer, intent(in) :: block_size, len
     real(real32), intent(in) :: input(0:)
     real(real32), intent(inout) :: output(0:)
-    integer :: gid, bid
+    integer :: tid, bid, gid
     real(real32) :: value
 
-    !$omp target teams distribute parallel do thread_limit(256) private(bid, value)
-    do gid = 0, len - 1
-      bid = gid / block_size
-      value = input(bid)
-      output(gid) = output(gid) + value
-    end do
-    !$omp end target teams distribute parallel do
+    !$omp target teams num_teams(len / block_size) thread_limit(block_size) private(value)
+      !$omp parallel private(tid, bid, gid)
+        tid = omp_get_thread_num()
+        bid = omp_get_team_num()
+        gid = bid * block_size + tid
+
+        if (tid == 0) value = input(bid)
+        !$omp barrier
+
+        output(gid) = output(gid) + value
+      !$omp end parallel
+    !$omp end target teams
   end subroutine b_addition
 
   subroutine scan_large_arrays_cpu_reference(output, input, length)

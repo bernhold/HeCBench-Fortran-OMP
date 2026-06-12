@@ -17,7 +17,7 @@ Offloading Benchmark Suite for Fortran Codes", submitted to IWOMP 2026 - The
   build-file changes between the initial port state and the structure-repair
   state.
 
-The repository contains 181 benchmark pairs. Each retained benchmark has both
+The repository contains 188 benchmark pairs. Each retained benchmark has both
 an original C/C++ OpenMP implementation and a matching Fortran OpenMP
 offloading implementation.
 

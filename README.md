@@ -21,6 +21,13 @@ The repository contains 188 benchmark pairs. Each retained benchmark has both
 an original C/C++ OpenMP implementation and a matching Fortran OpenMP
 offloading implementation.
 
+## Licensing
+
+`SPDX-License-Identifier: BSD-3-Clause AND CC0-1.0`
+
+- The original benchmarks (`src/*-omp/`) are licensed under the [BSD 3-Clause License](LICENSE.bsd).
+- The AI-generated translations (`src/*-omp-fortran/`) are in the public domain under the [Creative Commons CC0 1.0 Universal (CC0 1.0) Public Domain Dedication](LICENSE.cc0).
+
 ## Provenance
 
 The original benchmark sources come from

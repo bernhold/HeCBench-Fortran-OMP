@@ -19,7 +19,7 @@ Offloading Benchmark Suite for Fortran Codes", submitted to IWOMP 2026 - The
 
 The repository contains 188 benchmark pairs. Each retained benchmark has both
 an original C/C++ OpenMP implementation and a matching Fortran OpenMP
-offloading implementation.
+offloading implementation.  The Fortran ports were produced by ChatGPT-5.5.
 
 ## Licensing
 

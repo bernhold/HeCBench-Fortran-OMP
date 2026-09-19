@@ -31,7 +31,7 @@ offloading implementation.
 ## Provenance
 
 The original benchmark sources come from
-[HeCBench](https://github.com/zjin-lcf/HeCBench), a heterogeneous computing
+[HeCBench](https://github.com/ORNL/HeCBench), a heterogeneous computing
 benchmark suite containing CUDA, HIP, SYCL, and OpenMP implementations. This
 repository was produced by filtering the development repository to retain the
 selected C/C++ OpenMP and Fortran OpenMP benchmark pairs.
